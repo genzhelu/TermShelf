@@ -187,9 +187,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" \
-            --title "TermShelf $GITHUB_REF_NAME" \
-            --notes "$(cat <<'EOF'
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; refreshing assets."
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "TermShelf $GITHUB_REF_NAME" \
+              --notes "$(cat <<'EOF'
           TermShelf desktop builds (unsigned).
 
           ### macOS (Ventura 13 or newer)
@@ -208,7 +211,8 @@ jobs:
           SHA-256 checksums for every asset are in `SHA256SUMS.txt`. Source is included for
           reproducibility. These builds are not code-signed or notarized.
           EOF
-          )"
+            )"
+          fi
           find artifacts -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \
             -o -name '*.AppImage' -o -name '*-source.tar.gz' -o -name 'SHA256SUMS.txt' \) \
             -print0 | xargs -0 -r gh release upload "$GITHUB_REF_NAME" --clobber
