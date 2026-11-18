@@ -56,6 +56,43 @@ pnpm build
 pnpm start          # electron-vite preview
 ```
 
+### Run on macOS
+
+Electron 45 requires **macOS 13 Ventura or newer** (Apple Silicon or Intel). Node 22 and
+pnpm 11 are the only build prerequisites; the native PTY ships as a prebuilt N-API binary, so
+no compiler is needed.
+
+```bash
+# On the Mac (source archive is in dist/termshelf-0.1.1-source.tar.gz,
+# or use the repo checkout)
+tar -xzf termshelf-0.1.1-source.tar.gz
+cd termshelf-0.1.1
+brew install node@22                      # or nvm install 22
+export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+npm install -g pnpm@11
+
+pnpm install --frozen-lockfile
+pnpm dev                                  # run the app from source
+```
+
+Build the distributables (unsigned by default):
+
+```bash
+pnpm build
+pnpm exec electron-builder --mac --arm64   # or --x64, or omit for both arches
+```
+
+Outputs land in `dist/` as `TermShelf-0.1.1-mac-arm64.dmg` / `.zip` and
+`TermShelf-0.1.1-mac-x64.dmg` / `.zip`; the unpacked app is under `dist/mac-arm64/` or
+`dist/mac/`. Launch a locally built app with `open dist/mac-arm64/TermShelf.app`.
+
+Because builds are **unsigned**, an app downloaded from CI is quarantined by Gatekeeper:
+right-click the app → **Open**, or run
+`xattr -dr com.apple.quarantine /Applications/TermShelf.app`. The first time you browse
+Desktop/Documents/Downloads, macOS may ask you to grant file access; allow it for the sidebar.
+Saved SSH secrets go to the macOS Keychain. Alternatively, push the repo to GitHub and run
+**Actions → Release → Run workflow** to have `macos-latest` build both DMGs for download.
+
 ### Try SSH locally with the bundled demo server
 
 `tools/dev-sshd` is a small ssh2-based SSH server with a sandboxed SFTP subsystem and a real
