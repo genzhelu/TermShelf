@@ -179,10 +179,15 @@ export async function prepareLocalShellLaunch(
       }
     }
 
-    const initPath = await write('profile.ps1', POWERSHELL_INIT)
+    // Pass the init script through -EncodedCommand instead of -File: execution
+    // policies (Restricted/AllSigned/RemoteSigned) block script *files*, and the
+    // generated integration file is unsigned. Encoded commands are not subject to
+    // the script file execution policy, so the prompt hook works out of the box
+    // without asking the user to change a machine-wide policy.
+    const encoded = Buffer.from(POWERSHELL_INIT, 'utf16le').toString('base64')
     return {
       ...base,
-      args: ['-NoLogo', '-NoExit', '-File', initPath],
+      args: ['-NoLogo', '-NoExit', '-EncodedCommand', encoded],
       env: { TERMSHELF_SHELL_INTEGRATION: 'powershell' },
       integrated: true,
       cleanup

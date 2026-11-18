@@ -102,8 +102,8 @@ see [docs/BUILDING.md](docs/BUILDING.md) for signing, notarization and CI detail
 
 Artifacts produced and verified in this checkout:
 
-- `dist/TermShelf-0.1.0-linux-x86_64.AppImage` — built and smoke-tested headlessly.
-- `dist/TermShelf-0.1.0-win-x64.zip` — Windows x64 portable build (PE32+ verified; cannot be
+- `dist/TermShelf-0.1.1-linux-x86_64.AppImage` — built and smoke-tested headlessly.
+- `dist/TermShelf-0.1.1-win-x64.zip` — Windows x64 portable build (PE32+ verified; cannot be
   executed on this Linux host).
 - The macOS `.dmg`/`.zip` must be built on macOS (or the provided CI workflow); macOS
   packaging is not possible on Linux.
@@ -143,6 +143,11 @@ never constructs filesystem paths itself.
   remotes work for the terminal and SFTP; remote-folder sync falls back to manual browsing.
   Shell integration is best-effort: if SFTP, shell detection or init-file verification fails,
   the session falls back to a plain shell and the sidebar remains fully usable manually.
+- **Running `ssh` inside a local terminal does not repoint the sidebar.** Use the app's
+  **New SSH Session** flow (server icon, `Ctrl/Cmd+Shift+T`) so it can open SFTP with the
+  same credentials and follow the remote shell's folder. This is also why X11-forwarding
+  commands like `ssh -Y` belong in a local terminal, while file transfers belong in an app
+  SSH session.
 - **Scope for v1**: no jump hosts/port forwarding/X11, no built-in editor, no upload
   resume/retry, no drag-out to the desktop, no session restore on launch, no light theme, no
   WSL/Git-Bash as _local_ shell backing (they remain valid SSH targets). Keyboard-interactive

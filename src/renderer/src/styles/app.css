@@ -1198,6 +1198,16 @@ code {
   overflow: hidden;
   white-space: nowrap;
 }
+.sidebar__scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.sidebar__scope .icon {
+  opacity: 0.8;
+}
 .sidebar__selection {
   padding: 1px 5px;
   border-radius: 3px;
