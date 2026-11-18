@@ -755,7 +755,11 @@ export class TransferEngine {
         }
         await fs.promises.rename(tempPath, destination)
         try {
-          await fs.promises.utimes(destination, new Date(entry.mtimeMs), new Date(entry.mtimeMs))
+          // Downloaded files are stamped with their completion time (not the
+          // remote file's mtime) so they sort as newest in file managers and in
+          // the local sidebar. Remote uploads keep the source mtime.
+          const completedAt = new Date()
+          await fs.promises.utimes(destination, completedAt, completedAt)
         } catch {
           /* metadata is best effort */
         }

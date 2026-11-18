@@ -343,3 +343,10 @@ Attachments: screenshot(s), config.json (redacted), logs/ entries, terminal outp
 - All **PASS** boxes on Windows 11 and macOS; Linux smoke pass (items 1, 3, 6, 10, 11).
 - No crashes, no unhandled-rejection dialogs, no plaintext secrets in config/logs.
 - Any deviation is documented in the QA report with severity and a linked issue.
+
+## Downloaded-file timestamps and refresh
+
+- Download a file from a remote folder, then sort the destination folder by **Modified**:
+  the downloaded copy must show the **download completion time**, not the remote file's mtime.
+- After an upload/download finishes, the sidebar must refresh automatically (new files appear
+  without pressing F5).

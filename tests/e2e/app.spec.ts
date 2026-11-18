@@ -7,7 +7,6 @@ import {
   fillSshForm,
   launchApp,
   openSshDialog,
-  refreshSidebar,
   shellQuote,
   stubOpenDialogQueue,
   typeInTerminal,
@@ -51,10 +50,10 @@ test('local session: folder sync, drag-equivalent upload, download, new folder',
     expect(fs.readFileSync(path.join(fixture, 'upload-source.txt'), 'utf8')).toBe(
       'uploaded-from-e2e'
     )
-    await refreshSidebar(page)
+    // The sidebar refreshes automatically when the transfer completes.
     await page
       .locator('[data-testid="file-row"][data-name="upload-source.txt"]')
-      .waitFor({ state: 'visible' })
+      .waitFor({ state: 'visible', timeout: 20_000 })
 
     // Download the selected file to a folder picked with the native dialog.
     const downloadDir = path.join(baseDir, 'downloads')
@@ -139,6 +138,9 @@ test('ssh session: host-key trust, remote sidebar, remote folder sync, upload an
     await page.getByTestId('download-button').click()
     await waitForFile(path.join(downloadDir, 'remote.txt'), 30_000)
     expect(fs.readFileSync(path.join(downloadDir, 'remote.txt'), 'utf8')).toBe('hello-remote')
+    expect(Date.now() - fs.statSync(path.join(downloadDir, 'remote.txt')).mtimeMs).toBeLessThan(
+      60_000
+    )
 
     // Remote CWD following via OSC 7 over the SSH pty.
     await typeInTerminal(page, 'cd photos && printf "REMOTE_CD_OK\\n"')

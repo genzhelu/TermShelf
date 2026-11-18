@@ -111,6 +111,18 @@ export const createTransferSlice: SliceCreator<TransferSlice> = (set, get) => ({
     if (existing?.state === job.state) return
     if (job.state === 'completed') {
       get().pushToast('success', `Transfer complete — ${job.label}`)
+      // Refresh the affected explorer so new files appear without a manual F5.
+      // Uploads live in the session's file view; downloads land on the local
+      // filesystem, so any local tab showing that folder should refresh too.
+      if (job.direction === 'upload') {
+        void get().refreshFiles(job.sessionId, { silent: true })
+      } else {
+        for (const tab of get().tabs) {
+          if (tab.kind === 'local' && get().fileViews[tab.id]?.path) {
+            void get().refreshFiles(tab.id, { silent: true })
+          }
+        }
+      }
     } else if (job.state === 'failed') {
       const detail = job.error ? errorMessage(job.error) : 'Unknown error'
       get().pushToast('error', `Transfer failed — ${detail}`)

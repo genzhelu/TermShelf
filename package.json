@@ -1,6 +1,6 @@
 {
   "name": "termshelf",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A terminal with a MobaXterm-style file sidebar for local and SSH sessions",
   "private": true,
   "license": "UNLICENSED",
