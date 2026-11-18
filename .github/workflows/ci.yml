@@ -6,6 +6,7 @@ on:
       - main
       - master
   pull_request:
+  workflow_dispatch:
 
 # Cancel superseded runs on the same branch/PR.
 concurrency:
@@ -135,4 +136,21 @@ jobs:
         run: pnpm typecheck
 
       - name: Test
-        run: pnpm test
+        shell: bash
+        run: |
+          set +e
+          pnpm test 2>&1 | tee vitest-output.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "### Vitest failure on ${{ matrix.os }}"
+              echo '```'
+              tail -n 150 vitest-output.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            tail -n 40 vitest-output.log | while IFS= read -r line; do
+              clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+              echo "::error title=Vitest::$clean"
+            done
+          fi
+          exit "$status"
