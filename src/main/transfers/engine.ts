@@ -711,16 +711,29 @@ export class TransferEngine {
 
     const bytesAtStart = job.bytesDone
     try {
-      const source =
-        direction === 'upload'
-          ? fs.createReadStream(entry.sourcePath, { highWaterMark: 128 * 1024 })
-          : backend.createReadStream(entry.sourcePath)
-      const writeStream = writeStreamFor(direction, backend, tempPath)
-      source.on('data', (chunk: Buffer | string) => {
-        job.bytesDone += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length
+      const onProgress = (transferred: number): void => {
+        job.bytesDone = bytesAtStart + transferred
         this.emitJob(job, false)
-      })
-      await pipeline(source, writeStream, { signal: job.abort.signal })
+      }
+      const hooks = { signal: job.abort.signal, onProgress }
+      if (direction === 'upload' && backend.uploadFile) {
+        // SFTP overrides this with a pipelined implementation; a single ordered
+        // stream keeps only one request in flight and is dramatically slower.
+        await backend.uploadFile(entry.sourcePath, tempPath, hooks)
+      } else if (direction === 'download' && backend.downloadFile) {
+        await backend.downloadFile(entry.sourcePath, tempPath, hooks)
+      } else {
+        const source =
+          direction === 'upload'
+            ? fs.createReadStream(entry.sourcePath, { highWaterMark: 128 * 1024 })
+            : backend.createReadStream(entry.sourcePath)
+        const writeStream = writeStreamFor(direction, backend, tempPath)
+        source.on('data', (chunk: Buffer | string) => {
+          job.bytesDone += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length
+          this.emitJob(job, false)
+        })
+        await pipeline(source, writeStream, { signal: job.abort.signal })
+      }
 
       if (job.cancelled) throw new AppError('TRANSFER_CANCELLED', 'Transfer cancelled')
 

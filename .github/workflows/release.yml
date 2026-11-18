@@ -1,7 +1,7 @@
 name: Release
 
 # Build distributable installers for all three desktop platforms.
-#   * Push a tag like v0.1.1 to build the artifacts and publish a GitHub Release
+#   * Push a tag like v0.1.2 to build the artifacts and publish a GitHub Release
 #     (macOS users can then download the .dmg directly from the Releases page).
 #   * Or run the workflow manually; artifacts stay on the workflow run.
 # Artifacts are unsigned by default. To sign later, see "Code signing" in

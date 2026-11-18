@@ -1,5 +1,6 @@
+import fs from 'node:fs'
 import type { Readable, Writable } from 'node:stream'
-import type { SFTPWrapper, Stats } from 'ssh2'
+import type { OpenMode, SFTPWrapper, Stats } from 'ssh2'
 import type { DirListing, EntryKind, FileEntry, PathStyle } from '@shared/types'
 import { MAX_DIR_ENTRIES } from '@shared/constants'
 import { AppError } from '../errors'
@@ -12,7 +13,7 @@ import {
   parentPathFor
 } from '../util/paths'
 import { mapSftpError, type SftpOperation } from '../util/ssh-errors'
-import type { FileBackend, WriteOptions } from './types'
+import type { FileBackend, FileTransferHooks, WriteOptions } from './types'
 
 const POSIX_STYLE: PathStyle = 'posix'
 
@@ -22,6 +23,15 @@ const S_IFREG = 0o100000
 const S_IFLNK = 0o120000
 
 const STREAM_HIGH_WATER_MARK = 128 * 1024
+
+/**
+ * SFTP is latency-bound: a single read/write stream keeps only one request in
+ * flight, so throughput collapses on links with even modest RTT. The fast path
+ * below keeps many chunk requests in flight (similar to ssh2's fastGet/fastPut)
+ * while still supporting progress reporting and cancellation.
+ */
+const TRANSFER_CONCURRENCY = 32
+const TRANSFER_CHUNK_SIZE = 128 * 1024
 
 export interface SftpBackendOptions {
   /** Overrides the detected home directory (`realpath('.')`). Mostly useful for tests. */
@@ -346,6 +356,269 @@ export class SftpBackend implements FileBackend {
       })
     }
     return stream
+  }
+
+  private openRaw(target: string, flags: OpenMode, mode = 0o666): Promise<Buffer> {
+    return sftpCall<Buffer>(target, 'open', (done) =>
+      this.sftp.open(target, flags, mode, (error, handle) => done(error, handle))
+    )
+  }
+
+  private closeRaw(handle: Buffer): Promise<void> {
+    return new Promise<void>((resolve) => {
+      try {
+        this.sftp.close(handle, () => resolve())
+      } catch {
+        resolve()
+      }
+    })
+  }
+
+  private readRaw(
+    target: string,
+    handle: Buffer,
+    buffer: Buffer,
+    length: number,
+    position: number
+  ): Promise<number> {
+    return sftpCall<number>(target, 'read', (done) =>
+      this.sftp.read(handle, buffer, 0, length, position, (error, bytesRead) =>
+        done(error, bytesRead)
+      )
+    )
+  }
+
+  private writeRaw(
+    target: string,
+    handle: Buffer,
+    buffer: Buffer,
+    length: number,
+    position: number
+  ): Promise<void> {
+    return sftpCall<void>(target, 'write', (done) =>
+      this.sftp.write(handle, buffer, 0, length, position, (error) => done(error))
+    )
+  }
+
+  /**
+   * Pipelined SFTP upload. Several chunks are read locally and written remotely
+   * concurrently, which is dramatically faster than a single ordered stream.
+   * Honours `hooks.signal` and reports byte progress.
+   */
+  async uploadFile(
+    localPath: string,
+    rawRemotePath: string,
+    hooks?: FileTransferHooks
+  ): Promise<void> {
+    const target = this.checked(rawRemotePath)
+    const signal = hooks?.signal
+    if (signal?.aborted) throw new AppError('TRANSFER_CANCELLED', 'Transfer cancelled')
+
+    let localStats: fs.Stats
+    try {
+      localStats = await fs.promises.stat(localPath)
+    } catch (error) {
+      throw new AppError('FS_NOT_FOUND', `Cannot read local file ${localPath}`, {
+        cause: (error as Error).message
+      })
+    }
+    if (!localStats.isFile()) {
+      throw new AppError('INVALID_ARGUMENT', `Not a file: ${localPath}`)
+    }
+
+    const localHandle = await fs.promises.open(localPath, 'r')
+    let remoteHandle: Buffer | null = null
+    let aborted = false
+    const onAbort = (): void => {
+      aborted = true
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    try {
+      remoteHandle = await this.openRaw(target, 'w', localStats.mode & 0o777)
+      const total = localStats.size
+      if (total === 0) {
+        hooks?.onProgress?.(0)
+        return
+      }
+
+      const concurrency = Math.min(
+        TRANSFER_CONCURRENCY,
+        Math.max(1, Math.ceil(total / TRANSFER_CHUNK_SIZE))
+      )
+      let nextOffset = 0
+      let transferred = 0
+      let failure: unknown = null
+
+      const worker = async (): Promise<void> => {
+        const buffer = Buffer.allocUnsafe(TRANSFER_CHUNK_SIZE)
+        while (!failure && !aborted) {
+          const chunkStart = nextOffset
+          nextOffset += TRANSFER_CHUNK_SIZE
+          if (chunkStart >= total) return
+          const chunkEnd = Math.min(chunkStart + TRANSFER_CHUNK_SIZE, total)
+          let position = chunkStart
+          while (position < chunkEnd && !failure && !aborted) {
+            const length = Math.min(TRANSFER_CHUNK_SIZE, chunkEnd - position)
+            let bytesRead: number
+            try {
+              const result = await localHandle.read(buffer, 0, length, position)
+              bytesRead = result.bytesRead
+            } catch (error) {
+              failure = error
+              return
+            }
+            if (bytesRead <= 0) {
+              failure = new AppError(
+                'TRANSFER_FAILED',
+                `Unexpected end of local file: ${localPath}`
+              )
+              return
+            }
+            try {
+              await this.writeRaw(target, remoteHandle!, buffer, bytesRead, position)
+            } catch (error) {
+              failure = error
+              return
+            }
+            position += bytesRead
+            transferred += bytesRead
+            try {
+              hooks?.onProgress?.(transferred)
+            } catch {
+              // A UI/progress callback must never fail the transfer.
+            }
+          }
+        }
+      }
+
+      await Promise.all(Array.from({ length: concurrency }, () => worker()))
+      if (aborted) throw new AppError('TRANSFER_CANCELLED', 'Transfer cancelled')
+      if (failure) throw failure
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+      try {
+        await localHandle.close()
+      } catch {
+        // best effort
+      }
+      if (remoteHandle) await this.closeRaw(remoteHandle)
+    }
+  }
+
+  /**
+   * Pipelined SFTP download, mirroring {@link uploadFile}. Short reads from the
+   * server are handled explicitly, so server-side chunk caps cannot corrupt data.
+   */
+  async downloadFile(
+    rawRemotePath: string,
+    localPath: string,
+    hooks?: FileTransferHooks
+  ): Promise<void> {
+    const target = this.checked(rawRemotePath)
+    const signal = hooks?.signal
+    if (signal?.aborted) throw new AppError('TRANSFER_CANCELLED', 'Transfer cancelled')
+
+    const remoteStats = await this.statRaw(target)
+    if (isDirectory(remoteStats)) {
+      throw new AppError('NOT_SUPPORTED', `Cannot download a directory as a file: ${target}`)
+    }
+    const total = sizeOf(remoteStats)
+
+    const remoteHandle = await this.openRaw(target, 'r')
+    let localHandle: fs.promises.FileHandle | null = null
+    let aborted = false
+    const onAbort = (): void => {
+      aborted = true
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    try {
+      localHandle = await fs.promises.open(localPath, 'w')
+      if (total === 0) {
+        hooks?.onProgress?.(0)
+        return
+      }
+      const concurrency = Math.min(
+        TRANSFER_CONCURRENCY,
+        Math.max(1, Math.ceil(total / TRANSFER_CHUNK_SIZE))
+      )
+      let nextOffset = 0
+      let transferred = 0
+      let failure: unknown = null
+
+      const writeAllLocal = async (
+        buffer: Buffer,
+        length: number,
+        position: number
+      ): Promise<void> => {
+        let written = 0
+        while (written < length) {
+          const result = await localHandle!.write(
+            buffer,
+            written,
+            length - written,
+            position + written
+          )
+          if (result.bytesWritten <= 0) {
+            throw new AppError('TRANSFER_FAILED', `Could not write local file: ${localPath}`)
+          }
+          written += result.bytesWritten
+        }
+      }
+
+      const worker = async (): Promise<void> => {
+        const buffer = Buffer.allocUnsafe(TRANSFER_CHUNK_SIZE)
+        while (!failure && !aborted) {
+          const chunkStart = nextOffset
+          nextOffset += TRANSFER_CHUNK_SIZE
+          if (chunkStart >= total) return
+          const chunkEnd = Math.min(chunkStart + TRANSFER_CHUNK_SIZE, total)
+          let position = chunkStart
+          while (position < chunkEnd && !failure && !aborted) {
+            const length = Math.min(TRANSFER_CHUNK_SIZE, chunkEnd - position)
+            let bytesRead: number
+            try {
+              bytesRead = await this.readRaw(target, remoteHandle, buffer, length, position)
+            } catch (error) {
+              failure = error
+              return
+            }
+            if (bytesRead <= 0) {
+              failure = new AppError('TRANSFER_FAILED', `Unexpected end of remote file: ${target}`)
+              return
+            }
+            try {
+              await writeAllLocal(buffer, bytesRead, position)
+            } catch (error) {
+              failure = error
+              return
+            }
+            position += bytesRead
+            transferred += bytesRead
+            try {
+              hooks?.onProgress?.(transferred)
+            } catch {
+              // ignore progress callback failures
+            }
+          }
+        }
+      }
+
+      await Promise.all(Array.from({ length: concurrency }, () => worker()))
+      if (aborted) throw new AppError('TRANSFER_CANCELLED', 'Transfer cancelled')
+      if (failure) throw failure
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+      if (localHandle) {
+        try {
+          await localHandle.close()
+        } catch {
+          // best effort
+        }
+      }
+      await this.closeRaw(remoteHandle)
+    }
   }
 
   async setTimes(rawPath: string, mtimeMs: number): Promise<void> {

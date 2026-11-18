@@ -15,6 +15,7 @@ export type SftpOperation =
   | 'rmdir'
   | 'open'
   | 'read'
+  | 'write'
   | 'setstat'
 
 /** ssh2 SFTP errors carry the protocol status code as a numeric `code` property. */
