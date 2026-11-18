@@ -1,0 +1,149 @@
+name: Release
+
+# Build distributable installers for all three desktop platforms.
+#   * Push a tag like v0.1.0 to build and upload the artifacts.
+#   * Or run the workflow manually (artifacts are attached to the run).
+# Artifacts are unsigned by default. To sign later, see "Code signing" in
+# docs/BUILDING.md and add the signing secrets to the repository.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Unsigned builds: never look for a local/CI signing certificate.
+  # Override per job (or set a repository variable) once signing is configured.
+  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+jobs:
+  windows:
+    name: Windows installers (unsigned)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm 11
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate packaging icons
+        run: pnpm icons
+
+      - name: Build app
+        run: pnpm build
+
+      - name: Package NSIS installer
+        run: npx electron-builder --win --publish never
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: termshelf-windows-${{ github.ref_name }}
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS dmg/zip (unsigned)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm 11
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate packaging icons
+        run: pnpm icons
+
+      - name: Build app
+        run: pnpm build
+
+      - name: Package dmg + zip (arm64 and x64)
+        run: npx electron-builder --mac --arm64 --x64 --publish never
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: termshelf-macos-${{ github.ref_name }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.blockmap
+            dist/latest*.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux AppImage (unsigned)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm 11
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate packaging icons
+        run: pnpm icons
+
+      - name: Build app
+        run: pnpm build
+
+      - name: Package AppImage
+        run: npx electron-builder --linux --publish never
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: termshelf-linux-${{ github.ref_name }}
+          path: |
+            dist/*.AppImage
+            dist/*.blockmap
+            dist/latest*.yml
+          if-no-files-found: error
+          retention-days: 14

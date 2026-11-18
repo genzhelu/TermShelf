@@ -1,0 +1,14 @@
+packages:
+  - '.'
+storeDir: .pnpm-store
+minimumReleaseAgeExclude:
+  - '@vitest/mocker@5.1.1'
+  - '@vitest/spy@5.1.1'
+  - vitest@5.1.1
+allowBuilds:
+  '@homebridge/node-pty-prebuilt-multiarch': true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  cpu-features: false
+  ssh2: false

@@ -1,0 +1,12 @@
+node_modules
+out
+dist
+.pnpm-store
+.cache
+test-results
+playwright-report
+coverage
+pnpm-lock.yaml
+build/icons
+.e2e-tmp
+src/renderer/.visual
