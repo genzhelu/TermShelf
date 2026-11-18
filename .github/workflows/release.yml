@@ -1,8 +1,9 @@
 name: Release
 
 # Build distributable installers for all three desktop platforms.
-#   * Push a tag like v0.1.1 to build and upload the artifacts.
-#   * Or run the workflow manually (artifacts are attached to the run).
+#   * Push a tag like v0.1.1 to build the artifacts and publish a GitHub Release
+#     (macOS users can then download the .dmg directly from the Releases page).
+#   * Or run the workflow manually; artifacts stay on the workflow run.
 # Artifacts are unsigned by default. To sign later, see "Code signing" in
 # docs/BUILDING.md and add the signing secrets to the repository.
 on:
@@ -147,3 +148,67 @@ jobs:
             dist/latest*.yml
           if-no-files-found: error
           retention-days: 14
+
+  # Attach the installers to a GitHub Release on tag pushes, so end users can
+  # download them directly (no GitHub account or Actions artifact access needed).
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - windows
+      - macos
+      - linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (for the source archive)
+        uses: actions/checkout@v4
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create source archive and checksums
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          git archive --format=tar.gz --prefix="termshelf-${version}/" HEAD \
+            > "artifacts/termshelf-${version}-source.tar.gz"
+          cd artifacts
+          find . -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \
+            -o -name '*.AppImage' -o -name '*-source.tar.gz' \) -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create release and upload installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --title "TermShelf $GITHUB_REF_NAME" \
+            --notes "$(cat <<'EOF'
+          TermShelf desktop builds (unsigned).
+
+          ### macOS (Ventura 13 or newer)
+          Download `TermShelf-<version>-mac-arm64.dmg` for Apple Silicon or
+          `TermShelf-<version>-mac-x64.dmg` for Intel, open it and drag TermShelf to
+          Applications. The build is unsigned: on first launch use right-click → Open, or run
+          `xattr -dr com.apple.quarantine /Applications/TermShelf.app`.
+
+          ### Windows 10/11 (x64)
+          Download and run `TermShelf-<version>-win-x64.exe`. Windows SmartScreen will warn
+          until the app is code-signed; choose "More info" → "Run anyway".
+
+          ### Linux (x64, development)
+          `TermShelf-<version>-linux-x86_64.AppImage`, made executable and run.
+
+          SHA-256 checksums for every asset are in `SHA256SUMS.txt`. Source is included for
+          reproducibility. These builds are not code-signed or notarized.
+          EOF
+          )"
+          find artifacts -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \
+            -o -name '*.AppImage' -o -name '*-source.tar.gz' -o -name 'SHA256SUMS.txt' \) \
+            -print0 | xargs -0 -r gh release upload "$GITHUB_REF_NAME" --clobber

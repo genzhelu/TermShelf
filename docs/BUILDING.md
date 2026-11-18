@@ -277,10 +277,14 @@ Notes:
   (AppImage). Each installs with pnpm 11/Node 22, runs `pnpm icons`, `pnpm build`, then
   `npx electron-builder --<target> --publish never`.
 - Artifacts are uploaded with `actions/upload-artifact@v4` (installer/zip/dmg/AppImage,
-  blockmaps, `latest*.yml`) and kept for 14 days. There is no automatic GitHub Release
-  upload; download the artifacts from the workflow run (or add a release step once signing is
-  configured).
-- Builds are unsigned (`CSC_IDENTITY_AUTO_DISCOVERY=false`).
+  blockmaps, `latest*.yml`) and kept for 14 days.
+- On a **tag push**, a dependent `publish` job downloads all artifacts, creates a source
+  archive and `SHA256SUMS.txt`, and publishes a **GitHub Release** with those assets using the
+  workflow's `contents: write` permission (no personal token needed). macOS users can then
+  download the DMG straight from the repository's Releases page. Manual dispatches do not
+  publish a release; download artifacts from the run instead.
+- Builds are unsigned (`CSC_IDENTITY_AUTO_DISCOVERY=false`). On macOS the release notes tell
+  users to right-click → Open (or clear the quarantine attribute) the first time.
 
 ### Reproducing CI locally
 

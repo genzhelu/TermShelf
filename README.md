@@ -90,8 +90,10 @@ Because builds are **unsigned**, an app downloaded from CI is quarantined by Gat
 right-click the app → **Open**, or run
 `xattr -dr com.apple.quarantine /Applications/TermShelf.app`. The first time you browse
 Desktop/Documents/Downloads, macOS may ask you to grant file access; allow it for the sidebar.
-Saved SSH secrets go to the macOS Keychain. Alternatively, push the repo to GitHub and run
-**Actions → Release → Run workflow** to have `macos-latest` build both DMGs for download.
+Saved SSH secrets go to the macOS Keychain. Alternatively push the repository to GitHub and
+push a tag (`git tag v0.1.1 && git push origin v0.1.1`): the release workflow builds both Mac
+architectures and publishes a GitHub **Release** with the DMGs, ZIPs and checksums attached,
+so other macOS users can install without a GitHub account.
 
 ### Try SSH locally with the bundled demo server
 
@@ -134,7 +136,9 @@ remote `cd` folder sync.
 | Linux (dev) | `.AppImage`                                 | `pnpm dist:linux`                                                                          |
 
 The repository's `.github/workflows/release.yml` builds all three on a `v*` tag (or manual
-dispatch) and uploads artifacts. Builds are unsigned unless signing secrets are configured —
+dispatch). Tag pushes also publish a **GitHub Release** with the `.dmg`/`.zip`/`.exe`/
+`.AppImage` assets, a source archive and `SHA256SUMS.txt`, so end users can install directly
+from the Releases page. Builds are unsigned unless signing secrets are configured —
 see [docs/BUILDING.md](docs/BUILDING.md) for signing, notarization and CI details.
 
 Artifacts produced and verified in this checkout:
