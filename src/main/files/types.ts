@@ -41,6 +41,13 @@ export interface FileBackend {
   setTimes(path: string, mtimeMs: number): Promise<void>
 
   /**
+   * Maps a backend path to the equivalent local filesystem path for backends
+   * that are a projection of the local filesystem (e.g. WSL via a UNC mount).
+   * Used to reject transfers whose source and destination are the same file.
+   */
+  localPathFor?(backendPath: string): string | null
+
+  /**
    * Optional pipelined upload of one local file to the backend. SFTP overrides
    * these to keep many requests in flight; without them the engine falls back to
    * a single ordered stream (much slower for downloads over latent links).

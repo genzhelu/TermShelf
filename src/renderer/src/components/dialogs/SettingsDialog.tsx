@@ -51,6 +51,10 @@ export function SettingsDialog(): React.JSX.Element {
   }, [platform])
 
   const wslAvailable = wslInfo?.available ?? false
+  const missingDistro =
+    draft.wslDistro && wslInfo && !wslInfo.distros.includes(draft.wslDistro)
+      ? draft.wslDistro
+      : null
 
   const update = <K extends keyof Settings>(key: K, value: Settings[K]): void => {
     setDraft((current) => ({ ...current, [key]: value }))
@@ -260,7 +264,9 @@ export function SettingsDialog(): React.JSX.Element {
             ) : null}
           </div>
 
-          {platform === 'win32' && wslAvailable && draft.localTerminal !== 'native' ? (
+          {platform === 'win32' &&
+          (wslAvailable || missingDistro) &&
+          draft.localTerminal !== 'native' ? (
             <div className="field">
               <label className="field__label" htmlFor="settings-wsl-distro">
                 WSL distribution
@@ -270,12 +276,15 @@ export function SettingsDialog(): React.JSX.Element {
                 className="input select"
                 data-testid="settings-wsl-distro"
                 value={draft.wslDistro ?? ''}
-                disabled={busy}
+                disabled={busy || !wslAvailable}
                 onChange={(event) => update('wslDistro', event.target.value || null)}
               >
                 <option value="">
                   Default{wslInfo?.defaultDistro ? ` (${wslInfo.defaultDistro})` : ''}
                 </option>
+                {missingDistro ? (
+                  <option value={missingDistro}>{missingDistro} (not installed)</option>
+                ) : null}
                 {(wslInfo?.distros ?? []).map((distro) => (
                   <option key={distro} value={distro}>
                     {distro}
@@ -283,6 +292,19 @@ export function SettingsDialog(): React.JSX.Element {
                 ))}
               </select>
               <span className="field__hint">Used for new WSL terminal tabs.</span>
+              {missingDistro ? (
+                <span className="field__hint">
+                  “{missingDistro}” is no longer installed. New tabs will fall back to the native
+                  shell.{' '}
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    onClick={() => update('wslDistro', null)}
+                  >
+                    Use default distribution
+                  </button>
+                </span>
+              ) : null}
             </div>
           ) : null}
 

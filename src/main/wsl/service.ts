@@ -41,6 +41,7 @@ const DEFAULT_TIMEOUT_MS = 10_000
 const LIST_TIMEOUT_MS = 5_000
 const VERBOSE_TIMEOUT_MS = 3_000
 const CONTEXT_TIMEOUT_MS = 15_000
+const UNC_PROBE_TIMEOUT_MS = 1_500
 
 /** Waits for a child process and captures decoded stdout/stderr. */
 export function runWslProcess(
@@ -150,20 +151,41 @@ export interface ParsedWslContext {
   uncPath: string | null
 }
 
+const CONTEXT_LABEL = /^TERMSHELF_(DISTRO|HOME|SHELL|UNC)=(.*)$/
+
 /** Parses the output of the context probe command. */
 export function parseWslContextOutput(
   output: string,
   requestedDistro: string | null
 ): ParsedWslContext {
-  const lines = output
-    .split('\n')
+  const lines = output.split('\n')
+  const labeled = new Map<string, string>()
+  for (const line of lines) {
+    const match = CONTEXT_LABEL.exec(line)
+    if (match?.[1] && match[2] !== undefined) labeled.set(match[1], match[2])
+  }
+  if (labeled.size > 0) {
+    const distro = (labeled.get('DISTRO') ?? '').trim() || requestedDistro || ''
+    const home = (labeled.get('HOME') ?? '').trim()
+    const shell = (labeled.get('SHELL') ?? '').trim()
+    const unc = (labeled.get('UNC') ?? '').trim()
+    return {
+      distro,
+      homePath: home.startsWith('/') ? home : '/home',
+      shellPath: shell.startsWith('/') ? shell : '/bin/bash',
+      uncPath: /^\\\\wsl(?:\.localhost|\$)\\/i.test(unc) ? unc : null
+    }
+  }
+  // Backward-compatible positional parsing. Do not filter blank lines: each
+  // field is positional, so a blank distro/home/shell must not shift the rest.
+  const distro = lines[0]?.trim() || requestedDistro || ''
+  const homePath = lines[1]?.trim().startsWith('/') ? lines[1]!.trim() : '/home'
+  const shellPath = lines[2]?.trim().startsWith('/') ? lines[2]!.trim() : '/bin/bash'
+  const uncLine = lines
+    .slice(3)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-  const distro = lines[0] || requestedDistro || ''
-  const homePath = lines[1]?.startsWith('/') ? lines[1] : '/home'
-  const shellPath = lines[2]?.startsWith('/') ? lines[2] : '/bin/bash'
-  const uncLine = lines.slice(3).find((line) => /^\\\\wsl(?:\.localhost|\$)\\/i.test(line))
-  return { distro, homePath, shellPath, uncPath: uncLine ? uncLine.trim() : null }
+    .find((line) => /^\\\\wsl(?:\.localhost|\$)\\/i.test(line))
+  return { distro, homePath, shellPath, uncPath: uncLine ?? null }
 }
 
 /** Builds UNC candidates for a distro, most preferred first. */
@@ -177,7 +199,10 @@ export function uncCandidatesForDistro(distro: string, reported?: string | null)
       candidates.push(trimmed)
     }
   }
-  push(reported)
+  if (distro && reported) {
+    const match = /^\\\\wsl(?:\.localhost|\$)\\([^\\]+)$/i.exec(reported.replace(/[\\/]+$/, ''))
+    if (match?.[1]?.toLowerCase() === distro.toLowerCase()) push(reported)
+  }
   if (distro) {
     push(`\\\\wsl.localhost\\${distro}`)
     push(`\\\\wsl$\\${distro}`)
@@ -185,11 +210,40 @@ export function uncCandidatesForDistro(distro: string, reported?: string | null)
   return candidates
 }
 
+function probeUncRoot(
+  pathExists: (candidate: string) => Promise<boolean>,
+  candidate: string,
+  timeoutMs: number,
+  onNativeSettled: () => void
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (value: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(false), Math.max(1, timeoutMs))
+    timer.unref?.()
+    pathExists(candidate).then(
+      (value) => {
+        onNativeSettled()
+        finish(value)
+      },
+      () => {
+        onNativeSettled()
+        finish(false)
+      }
+    )
+  })
+}
+
 const CONTEXT_SCRIPT = [
-  'printf "%s\\n" "$WSL_DISTRO_NAME"',
-  'printf "%s\\n" "$HOME"',
-  'printf "%s\\n" "$SHELL"',
-  'command -v wslpath >/dev/null 2>&1 && wslpath -w / || true'
+  'printf "TERMSHELF_DISTRO=%s\\n" "$WSL_DISTRO_NAME"',
+  'printf "TERMSHELF_HOME=%s\\n" "$HOME"',
+  'printf "TERMSHELF_SHELL=%s\\n" "$SHELL"',
+  'if command -v wslpath >/dev/null 2>&1; then printf "TERMSHELF_UNC=%s\\n" "$(wslpath -w / 2>/dev/null || true)"; fi'
 ].join('; ')
 
 /** Detects WSL and resolves per-distro context. All commands are argv based. */
@@ -202,6 +256,7 @@ export class WslService {
   private readonly executable: string | null
   private infoCache: { at: number; value: WslInfo } | null = null
   private contextCache = new Map<string, { at: number; value: WslContext }>()
+  private pendingUncProbes = 0
 
   constructor(options: WslServiceOptions = {}) {
     this.platform = options.platform ?? process.platform
@@ -346,11 +401,32 @@ export class WslService {
     if (!homePath.startsWith('/')) homePath = '/'
     const candidates = uncCandidatesForDistro(actualDistro, parsed.uncPath)
     let uncRoot: string | null = null
-    for (const candidate of candidates) {
-      if (await this.pathExists(candidate)) {
-        uncRoot = candidate
-        break
+    const deadline = this.now() + UNC_PROBE_TIMEOUT_MS
+    // Windows fs.stat cannot be cancelled. If a previous round left probes
+    // unresolved, skip issuing more so retries cannot exhaust the libuv thread
+    // pool; the terminal-only fallback still works.
+    if (this.pendingUncProbes === 0) {
+      for (const [index, candidate] of candidates.entries()) {
+        const remaining = deadline - this.now()
+        if (remaining <= 0) break
+        // Give every alias a share of the budget instead of letting a stalled
+        // \\wsl.localhost request consume the time needed to try \\wsl$.
+        const candidatesLeft = candidates.length - index
+        const budget = Math.max(250, Math.floor(remaining / candidatesLeft))
+        this.pendingUncProbes += 1
+        const settled = (): void => {
+          this.pendingUncProbes = Math.max(0, this.pendingUncProbes - 1)
+        }
+        if (await probeUncRoot(this.pathExists, candidate, Math.min(remaining, budget), settled)) {
+          uncRoot = candidate
+          break
+        }
       }
+    } else {
+      // Do not issue more Win32 stats while old ones are unresolved. Reuse the
+      // last known mount (if any) so a retry does not downgrade a working tab.
+      const cached = this.contextCache.get(key) ?? this.contextCache.get(actualDistro)
+      if (cached?.value.uncRoot) uncRoot = cached.value.uncRoot
     }
     const value: WslContext = {
       distro: actualDistro,

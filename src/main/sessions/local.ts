@@ -37,6 +37,8 @@ export interface LocalSessionOptions {
   homePath?: string
   environment?: SessionEnvironment
   label?: string
+  /** How long a custom (WSL) launch must stay alive before it is reported ready. */
+  startupGraceMs?: number
 }
 
 export class LocalSession implements Session {
@@ -52,6 +54,10 @@ export class LocalSession implements Session {
   private readonly emit: SessionEventSink
   private shellProcess: IPty | null = null
   private activeCleanup: (() => Promise<void>) | null = null
+  private readonly cleanupPromises = new Set<Promise<void>>()
+  private startupPending = false
+  private startupOutput: string[] = []
+  private readonly startupGraceMs: number
   private batcher: DataBatcher | null = null
   private status: SessionStatus = 'connecting'
   private cols: number
@@ -72,6 +78,7 @@ export class LocalSession implements Session {
     this.environment = options.environment ?? 'native'
     this.shellLabel = options.label ?? 'Local'
     this.customLaunch = options.launch
+    this.startupGraceMs = options.startupGraceMs ?? 1500
   }
 
   get backend(): FileBackend {
@@ -158,6 +165,10 @@ export class LocalSession implements Session {
       runtimeRoot,
       sessionId: this.id
     })
+    if (this.disposed) {
+      await launch.cleanup().catch(() => undefined)
+      throw new AppError('SHELL_SPAWN_FAILED', 'Session closed during startup')
+    }
 
     const cwd = this.pickCwd()
     const env: Record<string, string> = {}
@@ -196,6 +207,10 @@ export class LocalSession implements Session {
     const launcher = this.customLaunch
     if (!launcher) return
     const launch = await launcher()
+    if (this.disposed) {
+      await launch.cleanup().catch(() => undefined)
+      throw new AppError('SHELL_SPAWN_FAILED', 'Session closed during startup')
+    }
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(process.env)) {
       if (typeof value === 'string') env[key] = value
@@ -207,6 +222,8 @@ export class LocalSession implements Session {
       ...(launch.env ?? {})
     })
     let child: IPty
+    this.startupPending = true
+    this.startupOutput = []
     try {
       child = pty.spawn(launch.file, launch.args, {
         name: 'xterm-256color',
@@ -215,6 +232,8 @@ export class LocalSession implements Session {
         env
       })
     } catch (error) {
+      this.startupPending = false
+      this.startupOutput = []
       try {
         await launch.cleanup()
       } catch {
@@ -223,6 +242,44 @@ export class LocalSession implements Session {
       throw error
     }
     this.attachChild(child, launch.label, launch.cleanup)
+    await this.waitForStartup(child)
+  }
+
+  /**
+   * wsl.exe can start successfully at the process level and then exit before
+   * the shell is usable (bad --cd, missing shell, ConPTY failure). Give custom
+   * launches a short grace period so those failures reach the native fallback
+   * instead of being reported as a connected tab.
+   */
+  private async waitForStartup(child: IPty): Promise<void> {
+    if (this.startupGraceMs > 0) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, this.startupGraceMs)
+        timer.unref?.()
+      })
+    }
+    if (this.disposed) {
+      this.discardStartupOutput()
+      throw new AppError('SHELL_SPAWN_FAILED', 'Session closed during startup')
+    }
+    if (this.shellProcess !== child) {
+      this.discardStartupOutput()
+      throw new AppError('SHELL_SPAWN_FAILED', 'Shell exited during startup')
+    }
+    this.startupPending = false
+    this.flushStartupOutput()
+  }
+
+  private flushStartupOutput(): void {
+    if (this.startupOutput.length === 0) return
+    const data = this.startupOutput.join('')
+    this.startupOutput = []
+    this.batcher?.push(data)
+  }
+
+  private discardStartupOutput(): void {
+    this.startupPending = false
+    this.startupOutput = []
   }
 
   private attachChild(child: IPty, label: string, cleanup: () => Promise<void>): void {
@@ -237,14 +294,19 @@ export class LocalSession implements Session {
     this.batcher = batcher
 
     child.onData((data) => {
-      if (generation === this.generation) batcher.push(data)
+      if (generation !== this.generation) return
+      if (this.startupPending) {
+        this.startupOutput.push(data)
+      } else {
+        batcher.push(data)
+      }
     })
     child.onExit(() => {
       if (generation !== this.generation) return
       batcher.flush()
       this.shellProcess = null
       void this.cleanupLaunch()
-      if (!this.disposed) {
+      if (!this.disposed && !this.startupPending) {
         this.status = 'ended'
         this.emitState()
       }
@@ -312,6 +374,16 @@ export class LocalSession implements Session {
     const child = this.shellProcess
     this.shellProcess = null
     if (child) {
+      // Windows node-pty defers kill() until a first data event. Nudge the
+      // process while it is still in startup so a silent child cannot outlive
+      // a closed tab.
+      if (this.startupPending) {
+        try {
+          child.write('\x03')
+        } catch {
+          // best effort
+        }
+      }
       try {
         child.kill()
       } catch {
@@ -319,17 +391,18 @@ export class LocalSession implements Session {
       }
     }
     await this.cleanupLaunch()
+    if (this.cleanupPromises.size > 0) {
+      await Promise.all([...this.cleanupPromises])
+    }
   }
 
   private async cleanupLaunch(): Promise<void> {
     const cleanup = this.activeCleanup
     this.activeCleanup = null
-    if (cleanup) {
-      try {
-        await cleanup()
-      } catch {
-        // best effort
-      }
-    }
+    if (!cleanup) return
+    const task = cleanup().catch(() => undefined)
+    this.cleanupPromises.add(task)
+    void task.finally(() => this.cleanupPromises.delete(task))
+    await task
   }
 }

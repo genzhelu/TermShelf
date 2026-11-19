@@ -216,14 +216,14 @@ Implementation pointers:
   first, then `\wsl$\<distro>`; if none is reachable the tab falls back to a terminal-only
   WSL session (no file sidebar). The service caches detection for 30 s.
 - `src/main/wsl/launch.ts` — prepares the interactive launch. Shell-integration scripts are
-  written _into the distro's_ `/tmp/termshelf-<session>/` directory **through the UNC mount**
+  written _into the distro's_ `/tmp/termshelf-<session>-<launch>/` directory **through the UNC mount**
   (so the same bash/zsh/fish OSC 7 hooks as native POSIX shells apply), verified with
   `wsl.exe … test -r <linux path>`, then launched as
   `wsl.exe -d <distro> --cd <linux-home> -e <shell> …`. `--cd` matters: it starts the shell in
   the Linux home instead of inheriting the Windows working directory. When the UNC root, shell
   or script write is unusable, the launch degrades to a plain
   `wsl.exe -d <distro> --cd <linux-home>` shell (terminal works, sidebar follow disabled).
-  The generated `/tmp/termshelf-*` directory is removed when the tab closes.
+  The generated `/tmp/termshelf-*-*` directory is removed when the tab closes.
 - `src/main/files/wsl-backend.ts` — the `FileBackend` for WSL tabs: the renderer sees POSIX
   paths (`/home/<user>`), while reads/writes/listing go through the UNC path. A `null` UNC root
   produces a terminal-only session whose file operations fail with `WSL_FS_UNAVAILABLE`.

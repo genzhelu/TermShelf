@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AppError } from '../../src/main/errors'
 import { prepareWslShellLaunch } from '../../src/main/wsl/launch'
+import type { PrepareWslLaunchOptions } from '../../src/main/wsl/launch'
 import { linuxToNative } from '../../src/main/wsl/paths'
 import type { WslContext, WslService } from '../../src/main/wsl/service'
 
@@ -25,6 +26,7 @@ interface FakeWslService {
 interface FakeServiceOptions {
   executablePath?: string | null
   readable?: boolean | ((distro: string, linuxPath: string) => boolean | Promise<boolean>)
+  chmodCode?: number
 }
 
 /**
@@ -43,6 +45,12 @@ function fakeService(options: FakeServiceOptions = {}): FakeWslService {
       const readable = options.readable
       if (typeof readable === 'function') return readable(distro, linuxPath)
       return readable ?? true
+    },
+    async runInDistro(
+      _distro: string,
+      _args: string[]
+    ): Promise<{ stdout: string; stderr: string; code: number }> {
+      return { stdout: '', stderr: '', code: options.chmodCode ?? 0 }
     }
   }
   return { service: service as unknown as WslService, readableCalls }
@@ -59,8 +67,16 @@ function makeContext(uncRoot: string | null, overrides: Partial<WslContext> = {}
   }
 }
 
+const TEST_LAUNCH_TOKEN = 'test'
+
 function scriptDir(uncRoot: string, sessionId: string): string {
-  return linuxToNative(uncRoot, `/tmp/termshelf-${sessionId}`)
+  return linuxToNative(uncRoot, `/tmp/termshelf-${sessionId}-${TEST_LAUNCH_TOKEN}`)
+}
+
+function prepare(
+  options: Omit<PrepareWslLaunchOptions, 'launchToken'>
+): ReturnType<typeof prepareWslShellLaunch> {
+  return prepareWslShellLaunch({ ...options, launchToken: TEST_LAUNCH_TOKEN })
 }
 
 afterEach(() => {
@@ -74,7 +90,7 @@ describe('prepareWslShellLaunch — bash', () => {
     const uncRoot = tempDir('termshelf-wsl-unc-')
     const { service, readableCalls } = fakeService()
     const sessionId = 'sess-bash'
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(uncRoot),
       sessionId
@@ -94,14 +110,14 @@ describe('prepareWslShellLaunch — bash', () => {
       '/bin/bash',
       '-l',
       '-c',
-      "exec '/bin/bash' --rcfile '/tmp/termshelf-sess-bash/bashrc' -i"
+      "exec '/bin/bash' --rcfile '/tmp/termshelf-sess-bash-test/bashrc' -i"
     ])
 
     const nativeDir = scriptDir(uncRoot, sessionId)
     const initPath = path.join(nativeDir, 'bashrc')
     expect(fs.existsSync(initPath)).toBe(true)
     expect(fs.readFileSync(initPath, 'utf8')).toContain('TermShelf shell integration (bash)')
-    expect(readableCalls).toEqual([['Ubuntu', '/tmp/termshelf-sess-bash/bashrc']])
+    expect(readableCalls).toEqual([['Ubuntu', '/tmp/termshelf-sess-bash-test/bashrc']])
 
     await result.cleanup()
     expect(fs.existsSync(nativeDir)).toBe(false)
@@ -112,7 +128,7 @@ describe('prepareWslShellLaunch — bash', () => {
   it('defaults --cd to / when the context has no home path', async () => {
     const uncRoot = tempDir('termshelf-wsl-unc-')
     const { service } = fakeService()
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(uncRoot, { homePath: '' }),
       sessionId: 'sess-home'
@@ -125,14 +141,14 @@ describe('prepareWslShellLaunch — bash', () => {
   it('sanitizes the session id so scripts stay under /tmp', async () => {
     const uncRoot = tempDir('termshelf-wsl-unc-')
     const { service } = fakeService()
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(uncRoot),
       sessionId: 'weird id/../x:y'
     })
     expect(result.integrated).toBe(true)
     const lastArg = result.args[result.args.length - 1] ?? ''
-    expect(lastArg).toContain("--rcfile '/tmp/termshelf-weird_id_.._x_y/bashrc'")
+    expect(lastArg).toContain("--rcfile '/tmp/termshelf-weird_id_.._x_y-test/bashrc'")
     // The token cannot add path separators (no traversal out of /tmp).
     expect(lastArg).not.toContain("'/../")
     expect(lastArg).not.toContain('weird id')
@@ -145,7 +161,7 @@ describe('prepareWslShellLaunch — zsh', () => {
   it('writes zdotdir init files and launches zsh with ZDOTDIR', async () => {
     const uncRoot = tempDir('termshelf-wsl-unc-')
     const { service, readableCalls } = fakeService()
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(uncRoot, { shellPath: '/usr/bin/zsh' }),
       sessionId: 'sess-zsh'
@@ -161,7 +177,7 @@ describe('prepareWslShellLaunch — zsh', () => {
       '/home/test',
       '-e',
       'env',
-      'ZDOTDIR=/tmp/termshelf-sess-zsh',
+      'ZDOTDIR=/tmp/termshelf-sess-zsh-test',
       '/usr/bin/zsh',
       '-l'
     ])
@@ -170,7 +186,7 @@ describe('prepareWslShellLaunch — zsh', () => {
     for (const name of ['.zshenv', '.zprofile', '.zshrc', '.zlogin']) {
       expect(fs.existsSync(path.join(nativeDir, name))).toBe(true)
     }
-    expect(readableCalls).toEqual([['Ubuntu', '/tmp/termshelf-sess-zsh/.zshrc']])
+    expect(readableCalls).toEqual([['Ubuntu', '/tmp/termshelf-sess-zsh-test/.zshrc']])
 
     await result.cleanup()
     expect(fs.existsSync(nativeDir)).toBe(false)
@@ -181,7 +197,7 @@ describe('prepareWslShellLaunch — fish', () => {
   it('sources the generated fish init file', async () => {
     const uncRoot = tempDir('termshelf-wsl-unc-')
     const { service, readableCalls } = fakeService()
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(uncRoot, { shellPath: '/usr/bin/fish' }),
       sessionId: 'sess-fish'
@@ -199,12 +215,12 @@ describe('prepareWslShellLaunch — fish', () => {
       '/usr/bin/fish',
       '-l',
       '-C',
-      "source '/tmp/termshelf-sess-fish/fish.fish'"
+      "source '/tmp/termshelf-sess-fish-test/fish.fish'"
     ])
 
     const nativeDir = scriptDir(uncRoot, 'sess-fish')
     expect(fs.existsSync(path.join(nativeDir, 'fish.fish'))).toBe(true)
-    expect(readableCalls).toEqual([['Ubuntu', '/tmp/termshelf-sess-fish/fish.fish']])
+    expect(readableCalls).toEqual([['Ubuntu', '/tmp/termshelf-sess-fish-test/fish.fish']])
 
     await result.cleanup()
     expect(fs.existsSync(nativeDir)).toBe(false)
@@ -215,7 +231,7 @@ describe('prepareWslShellLaunch — plain fallbacks', () => {
   it('falls back to a plain wsl.exe launch for unsupported shells', async () => {
     const uncRoot = tempDir('termshelf-wsl-unc-')
     const { service, readableCalls } = fakeService()
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(uncRoot, { shellPath: '/bin/sh' }),
       sessionId: 'sess-sh'
@@ -231,7 +247,7 @@ describe('prepareWslShellLaunch — plain fallbacks', () => {
 
   it('falls back when the UNC root is unavailable', async () => {
     const { service, readableCalls } = fakeService()
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(null),
       sessionId: 'sess-null'
@@ -244,7 +260,7 @@ describe('prepareWslShellLaunch — plain fallbacks', () => {
   it('falls back and removes its scripts when wsl.exe cannot read them', async () => {
     const uncRoot = tempDir('termshelf-wsl-unc-')
     const { service } = fakeService({ readable: false })
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(uncRoot),
       sessionId: 'sess-unreadable'
@@ -260,7 +276,7 @@ describe('prepareWslShellLaunch — plain fallbacks', () => {
         throw new Error('wsl test -r failed')
       }
     })
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(uncRoot),
       sessionId: 'sess-probe-error'
@@ -269,11 +285,43 @@ describe('prepareWslShellLaunch — plain fallbacks', () => {
     expect(fs.existsSync(scriptDir(uncRoot, 'sess-probe-error'))).toBe(false)
   })
 
+  it('does not delete a pre-existing directory when the launch directory collides', async () => {
+    const uncRoot = tempDir('termshelf-wsl-unc-')
+    const { service } = fakeService()
+    const sessionId = 'sess-collision'
+    const nativeDir = scriptDir(uncRoot, sessionId)
+    fs.mkdirSync(nativeDir, { recursive: true })
+    const sentinel = path.join(nativeDir, 'owned-by-someone-else.txt')
+    fs.writeFileSync(sentinel, 'sentinel')
+    const result = await prepare({
+      service,
+      context: makeContext(uncRoot),
+      sessionId
+    })
+    expect(result.integrated).toBe(false)
+    expect(fs.readFileSync(sentinel, 'utf8')).toBe('sentinel')
+    await result.cleanup()
+    expect(fs.existsSync(sentinel)).toBe(true)
+  })
+
+  it('falls back to a plain shell if the distro cannot restrict init permissions', async () => {
+    const uncRoot = tempDir('termshelf-wsl-unc-')
+    const { service } = fakeService({ chmodCode: 1 })
+    const result = await prepare({
+      service,
+      context: makeContext(uncRoot),
+      sessionId: 'sess-chmod'
+    })
+    expect(result.integrated).toBe(false)
+    expect(result.args).toEqual(['-d', 'Ubuntu', '--cd', '/home/test'])
+    expect(fs.existsSync(scriptDir(uncRoot, 'sess-chmod'))).toBe(false)
+  })
+
   it('falls back when the init script cannot be written', async () => {
     const notADirectory = path.join(tempDir('termshelf-wsl-file-'), 'not-a-dir')
     fs.writeFileSync(notADirectory, 'file')
     const { service } = fakeService()
-    const result = await prepareWslShellLaunch({
+    const result = await prepare({
       service,
       context: makeContext(notADirectory),
       sessionId: 'sess-write-fail'
@@ -284,7 +332,7 @@ describe('prepareWslShellLaunch — plain fallbacks', () => {
 
   it('throws WSL_UNAVAILABLE when wsl.exe is missing', async () => {
     const { service } = fakeService({ executablePath: null })
-    const error = await prepareWslShellLaunch({
+    const error = await prepare({
       service,
       context: makeContext(tempDir('termshelf-wsl-unc-')),
       sessionId: 'sess-no-exe'

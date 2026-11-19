@@ -38,6 +38,7 @@ interface PlannedTopItem {
   destinationPath: string
   kind: 'dir' | 'file'
   entries: PlanEntry[]
+  selfCopy?: boolean
 }
 
 interface Plan {
@@ -120,6 +121,18 @@ export class TransferEngine {
     }
 
     const conflicts = await this.findConflicts(backend, request, plan)
+    const selfCopy = plan.topItems.some((item) => item.selfCopy)
+    if (selfCopy && request.conflictPolicy === 'ask' && conflicts.length > 0) {
+      // Let the conflict dialog offer Skip / Keep both; an overwrite would
+      // delete the source before it can be read.
+      return { status: 'conflicts', conflicts }
+    }
+    if (selfCopy && request.conflictPolicy !== 'skip' && request.conflictPolicy !== 'keepBoth') {
+      return {
+        status: 'invalid',
+        message: `Source and destination refer to the same file: ${plan.topItems[0]?.sourcePath ?? ''}`
+      }
+    }
     if (request.conflictPolicy === 'ask' && conflicts.length > 0) {
       return { status: 'conflicts', conflicts }
     }
@@ -219,12 +232,7 @@ export class TransferEngine {
         )
       }
       destinations.add(destinationKey)
-      if (path.resolve(source) === path.resolve(destination)) {
-        throw new AppError(
-          'INVALID_ARGUMENT',
-          `Source and destination are the same path: ${source}`
-        )
-      }
+      const selfCopy = await this.detectSelfCopy(backend, destination, source)
       const resolved = await this.resolveLocalSource(source)
       const entries: PlanEntry[] = []
       await this.walkLocal(resolved.path, destination, entries, visited, backend.pathStyle)
@@ -233,7 +241,8 @@ export class TransferEngine {
         sourcePath: source,
         destinationPath: destination,
         kind: resolved.kind,
-        entries
+        entries,
+        ...(selfCopy ? { selfCopy: true } : {})
       })
     }
     return this.summarize(topItems)
@@ -328,6 +337,7 @@ export class TransferEngine {
         targetPlatform
       )
       const destination = path.join(request.destDir, safeName)
+      const selfCopy = await this.detectSelfCopy(backend, source, destination)
       const resolved = await this.resolveBackendSource(backend, source)
       const entries: PlanEntry[] = []
       await this.walkBackend(
@@ -344,10 +354,61 @@ export class TransferEngine {
         sourcePath: source,
         destinationPath: destination,
         kind: resolved.kind,
-        entries
+        entries,
+        ...(selfCopy ? { selfCopy: true } : {})
       })
     }
     return this.summarize(topItems)
+  }
+
+  /**
+   * Rejects transfers whose backend path and local path denote the same file.
+   * WSL paths and their Windows UNC aliases are different strings, so compare
+   * file identity via the backend's local mapping rather than path spelling.
+   */
+  private async detectSelfCopy(
+    backend: FileBackend,
+    backendPath: string,
+    localPath: string
+  ): Promise<boolean> {
+    if (!backend.localPathFor) return false
+    // Resolve a lazy mount (WSL retry provider) before mapping the path.
+    try {
+      await backend.stat(backendPath)
+    } catch {
+      // A missing destination cannot be the source; normal planning reports it.
+    }
+    const nativePath = backend.localPathFor(backendPath)
+    if (!nativePath) return false
+    try {
+      const [backendStat, localStat] = await Promise.all([
+        fs.promises.stat(nativePath),
+        fs.promises.stat(localPath)
+      ])
+      // Reliable file IDs are conclusive even on case-sensitive Windows
+      // directories where canonical path comparison would be wrong.
+      if (backendStat.ino !== 0 && localStat.ino !== 0) {
+        return backendStat.dev === localStat.dev && backendStat.ino === localStat.ino
+      }
+      const [backendReal, localReal] = await Promise.all([
+        fs.promises.realpath(nativePath),
+        fs.promises.realpath(localPath)
+      ])
+      return this.localPathsEqual(backendReal, localReal)
+    } catch {
+      // If one side no longer exists the normal transfer planning reports it.
+      return false
+    }
+  }
+
+  private localPathsEqual(a: string, b: string): boolean {
+    const normalize = (value: string): string =>
+      value.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/i, '')
+    const left = path.resolve(normalize(a))
+    const right = path.resolve(normalize(b))
+    return process.platform === 'win32'
+      ? left.toLowerCase() === right.toLowerCase()
+      : left === right
   }
 
   private reserveLocalName(
@@ -691,10 +752,23 @@ export class TransferEngine {
         : await this.localExists(destination)
 
     if (exists) {
+      // A nested symlink can resolve to the destination even when the top-level
+      // items are different. Never delete a destination that is also the
+      // source of this entry; Skip/Keep both remain safe alternatives.
+      const selfCopy =
+        direction === 'upload'
+          ? await this.detectSelfCopy(backend, destination, entry.sourcePath)
+          : await this.detectSelfCopy(backend, entry.sourcePath, destination)
+      if (selfCopy && policy !== 'skip' && policy !== 'keepBoth') {
+        throw new AppError(
+          'INVALID_ARGUMENT',
+          `Refusing to overwrite a destination that is the source of this file: ${entry.sourcePath}`
+        )
+      }
       if (policy === 'skip') return
       if (policy === 'keepBoth') {
         destination = await this.uniqueDestination(backend, direction, destination)
-      } else {
+      } else if (!selfCopy) {
         if (direction === 'upload') await backend.remove([destination], true)
         else await this.removeLocal(destination)
       }

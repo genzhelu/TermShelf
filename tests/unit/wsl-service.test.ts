@@ -12,7 +12,7 @@ import type { WslProcessResult, WslRunner, WslServiceOptions } from '../../src/m
 
 const WSL_EXE = 'C:\\fake\\wsl.exe'
 const CONTEXT_SCRIPT =
-  'printf "%s\\n" "$WSL_DISTRO_NAME"; printf "%s\\n" "$HOME"; printf "%s\\n" "$SHELL"; command -v wslpath >/dev/null 2>&1 && wslpath -w / || true'
+  'printf "TERMSHELF_DISTRO=%s\\n" "$WSL_DISTRO_NAME"; printf "TERMSHELF_HOME=%s\\n" "$HOME"; printf "TERMSHELF_SHELL=%s\\n" "$SHELL"; if command -v wslpath >/dev/null 2>&1; then printf "TERMSHELF_UNC=%s\\n" "$(wslpath -w / 2>/dev/null || true)"; fi'
 
 // `\\wsl.localhost\Ubuntu` / `\\wsl$\Ubuntu` as the parser sees them.
 const UNC_LOCALHOST_UBUNTU = '\\\\wsl.localhost\\Ubuntu'
@@ -567,6 +567,79 @@ describe('WslService.resolveContext', () => {
     expect(contextCalls[0]).toEqual(['-e', 'sh', '-c', CONTEXT_SCRIPT])
     expect(contextCalls[1]?.slice(0, 4)).toEqual(['-d', 'Debian', '-e', 'sh'])
   })
+})
+
+describe('labeled WSL context output', () => {
+  it('parses labeled fields and does not let empty fields shift later values', () => {
+    const output = [
+      'TERMSHELF_DISTRO=Ubuntu',
+      'TERMSHELF_HOME=',
+      'TERMSHELF_SHELL=/usr/bin/zsh',
+      'TERMSHELF_UNC=\\\\wsl.localhost\\Ubuntu\\',
+      'noise'
+    ].join('\n')
+    expect(parseWslContextOutput(output, null)).toEqual({
+      distro: 'Ubuntu',
+      homePath: '/home',
+      shellPath: '/usr/bin/zsh',
+      uncPath: `${UNC_LOCALHOST_UBUNTU}\\`
+    })
+  })
+
+  it('falls back for missing labeled fields and malformed UNC roots', () => {
+    const output = [
+      'TERMSHELF_DISTRO=',
+      'TERMSHELF_HOME=relative',
+      'TERMSHELF_SHELL=relative',
+      'TERMSHELF_UNC=C:\\not-a-wsl-root'
+    ].join('\n')
+    expect(parseWslContextOutput(output, 'Debian')).toEqual({
+      distro: 'Debian',
+      homePath: '/home',
+      shellPath: '/bin/bash',
+      uncPath: null
+    })
+  })
+
+  it('ignores a reported share belonging to a different distro', () => {
+    expect(uncCandidatesForDistro('Ubuntu', '\\\\wsl$\\Debian')).toEqual([
+      UNC_LOCALHOST_UBUNTU,
+      UNC_DOLLAR_UBUNTU
+    ])
+  })
+
+  it('falls back to the wsl$ alias when wsl.localhost stalls', async () => {
+    const { runner } = createRunner()
+    const service = new WslService({
+      platform: 'win32',
+      executablePath: WSL_EXE,
+      runner,
+      pathExists: (candidate) =>
+        candidate.toLowerCase().includes('wsl$')
+          ? Promise.resolve(true)
+          : new Promise<boolean>(() => undefined)
+    })
+    const context = await service.resolveContext('Ubuntu')
+    expect(context.uncRoot).toBe(UNC_DOLLAR_UBUNTU)
+    // A forced retry while the stalled alias is still outstanding must keep
+    // the known-working mount instead of downgrading to terminal-only.
+    const retry = await service.resolveContext('Ubuntu', true)
+    expect(retry.uncRoot).toBe(UNC_DOLLAR_UBUNTU)
+  }, 5_000)
+
+  it('degrades to a terminal-only context when the UNC probe stalls', async () => {
+    const { runner } = createRunner()
+    const service = new WslService({
+      platform: 'win32',
+      executablePath: WSL_EXE,
+      runner,
+      pathExists: () => new Promise<boolean>(() => undefined)
+    })
+    const started = Date.now()
+    const context = await service.resolveContext('Ubuntu')
+    expect(context.uncRoot).toBeNull()
+    expect(Date.now() - started).toBeLessThan(3_000)
+  }, 5_000)
 })
 
 describe('WslService helpers', () => {

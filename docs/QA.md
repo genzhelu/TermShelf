@@ -202,7 +202,7 @@ wsl -d Ubuntu -- pwd         # a working shell (replace Ubuntu with your distro)
       closing one tab does not affect the others.
 - [ ] **3b.13 Cleanup on close** — Close the WSL tab: the `wsl.exe` process disappears from
       Task Manager and the generated shell-integration scripts under
-      `/tmp/termshelf-<session>/` inside the distro are removed (`ls /tmp | grep termshelf`).
+      `/tmp/termshelf-<session>-<launch>/` inside the distro are removed (`ls /tmp | grep termshelf`).
 - [ ] **3b.14 Shell integration / degradation** — For bash, zsh and fish the OSC 7 hook is
       active (prompt hook installs without errors, sidebar follows `cd`). If the distribution's
       login shell is unsupported (`/bin/sh`, `ksh`), the tab still opens as a plain WSL shell
@@ -386,15 +386,15 @@ Save an SSH profile **with** the password (and a passphrase-protected key profil
 
 ## Appendix A — File locations
 
-| Item                      | Windows 11                                                                   | macOS                                                 | Linux                             |
-| ------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------- |
-| Config + secrets          | `%APPDATA%\TermShelf\config.json`                                            | `~/Library/Application Support/TermShelf/config.json` | `~/.config/TermShelf/config.json` |
-| Logs                      | `%APPDATA%\TermShelf\logs\`                                                  | `~/Library/Application Support/TermShelf/logs/`       | `~/.config/TermShelf/logs/`       |
-| Runtime shell integration | `%APPDATA%\TermShelf\runtime\`                                               | `~/Library/Application Support/TermShelf/runtime/`    | `~/.config/TermShelf/runtime/`    |
-| Demo host key             | `.dev-sshd/host.key` (repo root, gitignored)                                 | same                                                  | same                              |
-| Demo SFTP root            | `demo-remote/` (repo root, gitignored by default)                            | same                                                  | same                              |
-| WSL distro files          | `\\wsl.localhost\<distro>\…` (fallback `\\wsl$\<distro>\…`)                  | —                                                     | —                                 |
-| WSL integration scripts   | inside the distro: `/tmp/termshelf-<session>/` (removed when the tab closes) | —                                                     | —                                 |
+| Item                      | Windows 11                                                                            | macOS                                                 | Linux                             |
+| ------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------- |
+| Config + secrets          | `%APPDATA%\TermShelf\config.json`                                                     | `~/Library/Application Support/TermShelf/config.json` | `~/.config/TermShelf/config.json` |
+| Logs                      | `%APPDATA%\TermShelf\logs\`                                                           | `~/Library/Application Support/TermShelf/logs/`       | `~/.config/TermShelf/logs/`       |
+| Runtime shell integration | `%APPDATA%\TermShelf\runtime\`                                                        | `~/Library/Application Support/TermShelf/runtime/`    | `~/.config/TermShelf/runtime/`    |
+| Demo host key             | `.dev-sshd/host.key` (repo root, gitignored)                                          | same                                                  | same                              |
+| Demo SFTP root            | `demo-remote/` (repo root, gitignored by default)                                     | same                                                  | same                              |
+| WSL distro files          | `\\wsl.localhost\<distro>\…` (fallback `\\wsl$\<distro>\…`)                           | —                                                     | —                                 |
+| WSL integration scripts   | inside the distro: `/tmp/termshelf-<session>-<launch>/` (removed when the tab closes) | —                                                     | —                                 |
 
 (The Electron userData folder name follows `app.getPath('userData')`; on Windows it can be
 `%APPDATA%\termshelf` if the app was ever launched by a build with a lowercase name — check

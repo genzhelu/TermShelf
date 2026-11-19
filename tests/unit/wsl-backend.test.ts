@@ -308,6 +308,44 @@ describe('WslBackend mutations', () => {
   })
 })
 
+describe('WslBackend resilience', () => {
+  it('resolves a missing UNC root lazily through the retry provider', async () => {
+    const fixture = createFixture()
+    writeFixture(fixture, '/home/test/later.txt', 'later')
+    const backend = new WslBackend(null, '/home/test', async () => fixture.root)
+    const listing = await backend.list('/home/test')
+    expect(listing.entries.map((entry) => entry.name)).toEqual(['later.txt'])
+    expect(backend.localPathFor('/home/test/later.txt')).toBe(
+      linuxToNative(fixture.root, '/home/test/later.txt')
+    )
+  })
+
+  it('switches to a refreshed UNC alias without reopening the session', async () => {
+    const first = createFixture()
+    const second = createFixture()
+    writeFixture(second, '/home/test/new-mount.txt', 'new')
+    const backend = new WslBackend(first.root, '/home/test')
+    backend.updateRoot(second.root)
+    const listing = await backend.list('/home/test')
+    expect(listing.entries.map((entry) => entry.name)).toEqual(['new-mount.txt'])
+    expect(backend.localPathFor('/home/test/new-mount.txt')).toBe(
+      linuxToNative(second.root, '/home/test/new-mount.txt')
+    )
+  })
+
+  it('skips Linux names that Win32 would reinterpret as separators', async () => {
+    if (process.platform === 'win32') return
+    const fixture = createFixture()
+    writeFixture(fixture, '/home/test/normal.txt', 'normal')
+    fs.writeFileSync(path.join(fixture.root, 'home', 'test', 'back\\slash.txt'), 'bad')
+    const listing = await fixture.backend.list('/home/test')
+    expect(listing.entries.map((entry) => entry.name)).toEqual(['normal.txt'])
+    expect((await captureError(fixture.backend.stat('/home/test/back\\slash.txt'))).code).toBe(
+      'FS_INVALID_PATH'
+    )
+  })
+})
+
 describe('WslBackend with TransferEngine', () => {
   it('uploads a local file into the WSL mount and downloads it back', async () => {
     const fixture = createFixture()
@@ -378,6 +416,102 @@ describe('WslBackend with TransferEngine', () => {
     expect(Math.abs(downloadStat.mtimeMs - sourceTime.getTime())).toBeGreaterThan(
       24 * 60 * 60 * 1000
     )
+  })
+
+  it('rejects uploading a WSL file onto itself through its Windows UNC path', async () => {
+    const fixture = createFixture()
+    writeFixture(fixture, '/home/test/same.txt', 'keep this data')
+    const source = path.join(fixture.root, 'home', 'test', 'same.txt')
+    const engine = new TransferEngine({ getBackend: () => fixture.backend, emit: () => undefined })
+    const result = await engine.start({
+      sessionId: 'wsl-session',
+      direction: 'upload',
+      sources: [source],
+      destDir: '/home/test',
+      conflictPolicy: 'overwrite'
+    })
+    expect(result.status).toBe('invalid')
+    if (result.status !== 'invalid') return
+    expect(result.message).toMatch(/same file/i)
+    expect(fs.readFileSync(source, 'utf8')).toBe('keep this data')
+  })
+
+  it('offers Keep both instead of rejecting a self-copy conflict', async () => {
+    const fixture = createFixture()
+    writeFixture(fixture, '/home/test/same.txt', 'keep this data')
+    const source = path.join(fixture.root, 'home', 'test', 'same.txt')
+    const engine = new TransferEngine({ getBackend: () => fixture.backend, emit: () => undefined })
+
+    const ask = await engine.start({
+      sessionId: 'wsl-session',
+      direction: 'upload',
+      sources: [source],
+      destDir: '/home/test',
+      conflictPolicy: 'ask'
+    })
+    expect(ask.status).toBe('conflicts')
+
+    const keepBoth = await engine.start({
+      sessionId: 'wsl-session',
+      direction: 'upload',
+      sources: [source],
+      destDir: '/home/test',
+      conflictPolicy: 'keepBoth'
+    })
+    expect(keepBoth.status).toBe('started')
+    if (keepBoth.status !== 'started') return
+    const job = await waitForJob(engine, keepBoth.job.id)
+    expect(job.state).toBe('completed')
+    expect(fs.readFileSync(source, 'utf8')).toBe('keep this data')
+    const names = (await fixture.backend.list('/home/test')).entries.map((entry) => entry.name)
+    expect(names).toContain('same.txt')
+    expect(names.some((name) => name !== 'same.txt' && name.startsWith('same'))).toBe(true)
+  })
+
+  it('rejects downloading a WSL file onto itself through its Windows UNC destination', async () => {
+    const fixture = createFixture()
+    writeFixture(fixture, '/home/test/same.txt', 'keep this data')
+    const engine = new TransferEngine({ getBackend: () => fixture.backend, emit: () => undefined })
+    const result = await engine.start({
+      sessionId: 'wsl-session',
+      direction: 'download',
+      sources: ['/home/test/same.txt'],
+      destDir: path.join(fixture.root, 'home', 'test'),
+      conflictPolicy: 'overwrite'
+    })
+    expect(result.status).toBe('invalid')
+    if (result.status !== 'invalid') return
+    expect(result.message).toMatch(/same file/i)
+    expect(fs.readFileSync(path.join(fixture.root, 'home', 'test', 'same.txt'), 'utf8')).toBe(
+      'keep this data'
+    )
+  })
+
+  it('refuses to overwrite a nested symlink target that is also its destination', async () => {
+    if (process.platform === 'win32') return
+    const fixture = createFixture()
+    // Download /home/test/src into /home/test/out. /home/test/src/alias is a
+    // symlink whose target is exactly /home/test/out/src/alias.
+    fs.mkdirSync(path.join(fixture.root, 'home', 'test', 'src'), { recursive: true })
+    fs.mkdirSync(path.join(fixture.root, 'home', 'test', 'out', 'src'), { recursive: true })
+    fs.writeFileSync(path.join(fixture.root, 'home', 'test', 'out', 'src', 'alias'), 'precious')
+    fs.symlinkSync('../out/src/alias', path.join(fixture.root, 'home', 'test', 'src', 'alias'))
+
+    const engine = new TransferEngine({ getBackend: () => fixture.backend, emit: () => undefined })
+    const started = await engine.start({
+      sessionId: 'wsl-session',
+      direction: 'download',
+      sources: ['/home/test/src'],
+      destDir: path.join(fixture.root, 'home', 'test', 'out'),
+      conflictPolicy: 'overwrite'
+    })
+    expect(started.status).toBe('started')
+    if (started.status !== 'started') return
+    const job = await waitForJob(engine, started.job.id)
+    expect(job.state).toBe('failed')
+    expect(
+      fs.readFileSync(path.join(fixture.root, 'home', 'test', 'out', 'src', 'alias'), 'utf8')
+    ).toBe('precious')
   })
 
   it('uploads a directory tree through the WSL backend', async () => {

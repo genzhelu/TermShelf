@@ -4,7 +4,13 @@ import type { Readable, Writable } from 'node:stream'
 import type { DirListing, EntryKind, FileEntry, PathStyle } from '@shared/types'
 import { MAX_DIR_ENTRIES } from '@shared/constants'
 import { AppError } from '../errors'
-import { linuxToNative, nativeToLinux, normalizeLinuxPath } from '../wsl/paths'
+import {
+  isWin32SafeComponent,
+  linuxToNative,
+  nativeToLinux,
+  normalizeLinuxPath,
+  validateLinuxEntryName
+} from '../wsl/paths'
 import type { FileBackend, WriteOptions } from './types'
 import { breadcrumbsFor, joinPath, parentPathFor } from '../util/paths'
 
@@ -53,14 +59,34 @@ export class WslBackend implements FileBackend {
   readonly isLocal = false
 
   private resolvedRootPromise: Promise<string | null> | null = null
+  private pendingRoot: Promise<string | null> | null = null
 
   constructor(
-    private readonly rootPath: string | null,
-    private readonly homePath: string
+    private rootPath: string | null,
+    private readonly homePath: string,
+    /** Called when a terminal-only session retries its UNC mount. */
+    private readonly rootProvider?: () => Promise<string | null>
   ) {}
 
   async home(): Promise<string> {
     return this.homePath
+  }
+
+  /** Installs a freshly probed UNC alias (e.g. wsl.localhost -> wsl$). */
+  updateRoot(root: string | null): void {
+    if (!root || root === this.rootPath) return
+    this.rootPath = root
+    this.resolvedRootPromise = null
+    this.pendingRoot = null
+  }
+
+  localPathFor(backendPath: string): string | null {
+    if (!this.rootPath) return null
+    try {
+      return linuxToNative(this.rootPath, normalizeLinuxPath(backendPath))
+    } catch {
+      return null
+    }
   }
 
   private assertRoot(): string {
@@ -73,13 +99,44 @@ export class WslBackend implements FileBackend {
     return this.rootPath
   }
 
-  private checked(rawPath: string): { linuxPath: string; nativePath: string } {
+  /** Resolves (or re-resolves) the UNC mount after an initial probe failure. */
+  private async ensureRoot(): Promise<string> {
+    if (this.rootPath) return this.rootPath
+    if (!this.rootProvider) {
+      throw new AppError(
+        'WSL_FS_UNAVAILABLE',
+        'The WSL filesystem is not accessible from Windows. Start the distribution and retry.'
+      )
+    }
+    if (!this.pendingRoot) {
+      this.pendingRoot = this.rootProvider()
+        .then((root) => {
+          // Do not clobber a newer alias installed by updateRoot() while this
+          // retry was in flight.
+          if (root && !this.rootPath) this.rootPath = root
+          return root
+        })
+        .catch(() => null)
+        .finally(() => {
+          this.pendingRoot = null
+        })
+    }
+    const root = await this.pendingRoot
+    if (root) return root
+    throw new AppError(
+      'WSL_FS_UNAVAILABLE',
+      'The WSL filesystem is not accessible from Windows. Start the distribution and retry.'
+    )
+  }
+
+  private async checked(rawPath: string): Promise<{ linuxPath: string; nativePath: string }> {
     const linuxPath = normalizeLinuxPath(rawPath)
-    return { linuxPath, nativePath: linuxToNative(this.assertRoot(), linuxPath) }
+    const root = await this.ensureRoot()
+    return { linuxPath, nativePath: linuxToNative(root, linuxPath) }
   }
 
   async list(rawPath: string): Promise<DirListing> {
-    const { linuxPath, nativePath } = this.checked(rawPath)
+    const { linuxPath, nativePath } = await this.checked(rawPath)
     let dirents: fs.Dirent[]
     try {
       dirents = await fs.promises.readdir(nativePath, { withFileTypes: true })
@@ -91,9 +148,12 @@ export class WslBackend implements FileBackend {
 
     const entries = (
       await mapLimit(dirents, 32, async (dirent): Promise<FileEntry | null> => {
+        // A backslash in a Linux name would become a Win32 separator and could
+        // associate metadata with a different file; skip such entries.
+        if (!isWin32SafeComponent(dirent.name)) return null
         const entryPath = joinPath(POSIX, linuxPath, dirent.name)
-        const entryNative = path.join(nativePath, dirent.name)
         try {
+          const entryNative = linuxToNative(this.assertRoot(), entryPath)
           const stat = await fs.promises.lstat(entryNative)
           const kind = kindForStats(stat.isDirectory(), stat.isSymbolicLink(), stat.isFile())
           let symlinkTarget: string | undefined
@@ -132,7 +192,7 @@ export class WslBackend implements FileBackend {
   }
 
   async stat(rawPath: string): Promise<FileEntry> {
-    const { linuxPath, nativePath } = this.checked(rawPath)
+    const { linuxPath, nativePath } = await this.checked(rawPath)
     let stat: fs.Stats
     try {
       stat = await fs.promises.lstat(nativePath)
@@ -167,7 +227,7 @@ export class WslBackend implements FileBackend {
   }
 
   async realpath(rawPath: string): Promise<string> {
-    const { linuxPath, nativePath } = this.checked(rawPath)
+    const { linuxPath, nativePath } = await this.checked(rawPath)
     let resolved: string
     try {
       resolved = await fs.promises.realpath(nativePath)
@@ -184,12 +244,16 @@ export class WslBackend implements FileBackend {
       const mapped = nativeToLinux(canonical, resolved)
       if (mapped !== null) return mapped
     }
-    return linuxPath
+    throw new AppError(
+      'FS_NOT_FOUND',
+      `Could not map resolved WSL path back into Linux form: ${linuxPath}`
+    )
   }
 
   async mkdir(parentPath: string, name: string): Promise<string> {
-    const parent = this.checked(parentPath)
-    const targetLinux = joinPath(POSIX, parent.linuxPath, name)
+    const parent = await this.checked(parentPath)
+    const safeName = validateLinuxEntryName(name)
+    const targetLinux = joinPath(POSIX, parent.linuxPath, safeName)
     const targetNative = linuxToNative(this.assertRoot(), targetLinux)
     try {
       await fs.promises.mkdir(targetNative)
@@ -203,8 +267,9 @@ export class WslBackend implements FileBackend {
   }
 
   async rename(rawPath: string, newName: string): Promise<string> {
-    const { linuxPath, nativePath } = this.checked(rawPath)
-    const destinationLinux = joinPath(POSIX, path.posix.dirname(linuxPath), newName)
+    const { linuxPath, nativePath } = await this.checked(rawPath)
+    const safeName = validateLinuxEntryName(newName)
+    const destinationLinux = joinPath(POSIX, path.posix.dirname(linuxPath), safeName)
     const destinationNative = linuxToNative(this.assertRoot(), destinationLinux)
     try {
       await fs.promises.rename(nativePath, destinationNative)
@@ -212,7 +277,7 @@ export class WslBackend implements FileBackend {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code === 'EEXIST' || code === 'EPERM' || code === 'ENOTEMPTY') {
-        throw new AppError('FS_EXISTS', `Cannot rename: ${newName} already exists`)
+        throw new AppError('FS_EXISTS', `Cannot rename: ${safeName} already exists`)
       }
       throw error
     }
@@ -220,7 +285,7 @@ export class WslBackend implements FileBackend {
 
   async remove(paths: string[], recursive: boolean): Promise<void> {
     for (const rawPath of paths) {
-      const { nativePath } = this.checked(rawPath)
+      const { nativePath } = await this.checked(rawPath)
       let stat: fs.Stats
       try {
         stat = await fs.promises.lstat(nativePath)
@@ -236,6 +301,9 @@ export class WslBackend implements FileBackend {
         }
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code
+        if (code === 'ENOTEMPTY' || code === 'EEXIST') {
+          throw new AppError('FS_EXISTS', `Folder is not empty: ${rawPath}`)
+        }
         if (code === 'EACCES' || code === 'EPERM') {
           throw new AppError('FS_PERMISSION_DENIED', `Permission denied: ${rawPath}`)
         }
@@ -245,18 +313,22 @@ export class WslBackend implements FileBackend {
   }
 
   createReadStream(rawPath: string): Readable {
-    return fs.createReadStream(this.checked(rawPath).nativePath, { highWaterMark: 128 * 1024 })
+    const root = this.assertRoot()
+    return fs.createReadStream(linuxToNative(root, normalizeLinuxPath(rawPath)), {
+      highWaterMark: 128 * 1024
+    })
   }
 
   createWriteStream(rawPath: string, options?: WriteOptions): Writable {
-    return fs.createWriteStream(this.checked(rawPath).nativePath, {
+    const root = this.assertRoot()
+    return fs.createWriteStream(linuxToNative(root, normalizeLinuxPath(rawPath)), {
       highWaterMark: 128 * 1024,
       ...(options?.mode !== undefined ? { mode: options.mode } : {})
     })
   }
 
   async setTimes(rawPath: string, mtimeMs: number): Promise<void> {
-    const { nativePath } = this.checked(rawPath)
+    const { nativePath } = await this.checked(rawPath)
     const mtime = new Date(mtimeMs)
     await fs.promises.utimes(nativePath, mtime, mtime)
   }

@@ -12,6 +12,8 @@ import type { Session, SessionEventSink } from './types'
 
 export class SessionManager {
   private readonly sessions = new Map<string, Session>()
+  private readonly pendingSessions = new Set<LocalSession>()
+  private shuttingDown = false
   private wslFallbackNotified = false
 
   constructor(
@@ -23,6 +25,7 @@ export class SessionManager {
   ) {}
 
   async createLocal(request: LocalSessionRequest): Promise<SessionDescriptor> {
+    if (this.shuttingDown) throw new AppError('INVALID_ARGUMENT', 'Application is shutting down')
     const settings = this.store.getSettings()
     const mode = request.terminal ?? settings.localTerminal
     const distro = request.wslDistro !== undefined ? request.wslDistro : settings.wslDistro
@@ -40,6 +43,7 @@ export class SessionManager {
         try {
           return await this.createWslSession(request, distro ?? null)
         } catch (error) {
+          if (this.shuttingDown) throw error
           this.notifyWslFallback(
             `WSL terminal unavailable (${messageOf(error)}); using the native shell instead.`
           )
@@ -69,9 +73,18 @@ export class SessionManager {
       emit: this.emitEvent,
       label: 'Local'
     })
-    const descriptor = await session.start()
-    this.sessions.set(id, session)
-    return descriptor
+    this.pendingSessions.add(session)
+    try {
+      const descriptor = await session.start()
+      if (this.shuttingDown) {
+        await session.dispose()
+        throw new AppError('INVALID_ARGUMENT', 'Application is shutting down')
+      }
+      this.sessions.set(id, session)
+      return descriptor
+    } finally {
+      this.pendingSessions.delete(session)
+    }
   }
 
   private async createWslSession(
@@ -80,24 +93,49 @@ export class SessionManager {
   ): Promise<SessionDescriptor> {
     const id = crypto.randomUUID()
     const context = await this.wsl.resolveContext(distro)
+    // Pin retries to the distribution that was actually opened. If the caller
+    // selected "Default", distro is null; re-resolving null later could follow
+    // a changed global default while the sidebar still points at this distro.
+    const pinnedDistro = context.distro
+    let firstLaunch = true
+    const backend = new WslBackend(context.uncRoot, context.homePath, () =>
+      this.wsl.resolveContext(pinnedDistro, true).then((fresh) => fresh.uncRoot)
+    )
     const session = new LocalSession({
       id,
       request,
       runtimeRoot: this.runtimeRoot,
       emit: this.emitEvent,
       environment: 'wsl',
-      backend: new WslBackend(context.uncRoot, context.homePath),
+      backend,
       homePath: context.homePath,
       label: `WSL · ${context.distro}`,
-      launch: () => prepareWslShellLaunch({ service: this.wsl, context, sessionId: id })
+      launch: async () => {
+        // Re-probe on reconnect: a transient UNC failure at startup must not
+        // permanently pin this tab to a terminal-only backend.
+        const current = firstLaunch
+          ? context
+          : await this.wsl.resolveContext(pinnedDistro, true).catch(() => context)
+        firstLaunch = false
+        backend.updateRoot(current.uncRoot)
+        return prepareWslShellLaunch({ service: this.wsl, context: current, sessionId: id })
+      }
     })
+    this.pendingSessions.add(session)
     try {
       const descriptor = await session.start()
+      if (this.shuttingDown) {
+        await session.dispose()
+        throw new AppError('INVALID_ARGUMENT', 'Application is shutting down')
+      }
       this.sessions.set(id, session)
       return descriptor
     } catch (error) {
       await session.dispose()
+      if (this.shuttingDown) throw error
       throw error
+    } finally {
+      this.pendingSessions.delete(session)
     }
   }
 
@@ -142,8 +180,10 @@ export class SessionManager {
   }
 
   async disposeAll(): Promise<void> {
-    const sessions = [...this.sessions.values()]
+    this.shuttingDown = true
+    const sessions: Session[] = [...this.sessions.values(), ...this.pendingSessions]
     this.sessions.clear()
+    this.pendingSessions.clear()
     await Promise.all(
       sessions.map(async (session) => {
         try {

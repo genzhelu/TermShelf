@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { LocalShellLaunch } from '../shell/integration'
@@ -21,9 +22,37 @@ export interface PrepareWslLaunchOptions {
   service: WslService
   context: WslContext
   sessionId: string
+  /** Test/launch override; a random token is used in production. */
+  launchToken?: string
 }
 
 const EMPTY_CLEANUP = async (): Promise<void> => undefined
+
+/**
+ * Windows fs modes over the 9P bridge do not reliably set Linux permissions.
+ * Run chmod inside the distro; if that cannot be established, use a plain shell
+ * rather than sourcing init files with unknown ownership/mode.
+ */
+async function restrictPermissions(
+  service: WslService,
+  distro: string,
+  linuxDir: string,
+  files: string[]
+): Promise<boolean> {
+  const runner = (service as Partial<Pick<WslService, 'runInDistro'>>).runInDistro
+  if (typeof runner !== 'function') return true
+  const filePaths = files.map((name) => `${linuxDir}/${name}`)
+  const command = [
+    `chmod 700 ${shellQuote(linuxDir)}`,
+    ...filePaths.map((file) => `chmod 600 ${shellQuote(file)}`)
+  ].join(' && ')
+  try {
+    const result = await runner.call(service, distro, ['sh', '-c', command])
+    return result.code === 0
+  } catch {
+    return false
+  }
+}
 
 function safeToken(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80) || 'session'
@@ -55,9 +84,12 @@ export async function prepareWslShellLaunch(
   const kind = shellKindForPath(context.shellPath)
   if (kind !== 'bash' && kind !== 'zsh' && kind !== 'fish') return plain
 
-  const linuxDir = `/tmp/termshelf-${safeToken(options.sessionId)}`
+  const token = safeToken(options.launchToken ?? randomUUID().slice(0, 8))
+  const linuxDir = `/tmp/termshelf-${safeToken(options.sessionId)}-${token}`
   const nativeDir = linuxToNative(context.uncRoot, linuxDir)
+  let ownsDirectory = false
   const cleanup = async (): Promise<void> => {
+    if (!ownsDirectory) return
     try {
       await fs.promises.rm(nativeDir, { recursive: true, force: true })
     } catch {
@@ -66,7 +98,10 @@ export async function prepareWslShellLaunch(
   }
 
   try {
-    await fs.promises.mkdir(nativeDir, { recursive: true, mode: 0o700 })
+    await fs.promises.mkdir(path.dirname(nativeDir), { recursive: true, mode: 0o700 })
+    // Create the private per-launch directory without reusing a stale one.
+    await fs.promises.mkdir(nativeDir, { mode: 0o700 })
+    ownsDirectory = true
     const write = async (name: string, content: string): Promise<string> => {
       const target = path.join(nativeDir, name)
       await fs.promises.writeFile(target, content, { mode: 0o600 })
@@ -75,6 +110,10 @@ export async function prepareWslShellLaunch(
 
     if (kind === 'bash') {
       const initPath = await write('bashrc', posixBashInit())
+      if (!(await restrictPermissions(service, context.distro, linuxDir, ['bashrc']))) {
+        await cleanup()
+        return plain
+      }
       if (!(await service.testReadable(context.distro, initPath))) {
         await cleanup()
         return plain
@@ -97,7 +136,11 @@ export async function prepareWslShellLaunch(
         const written = await write(name, content)
         if (name === '.zshrc') rcPath = written
       }
-      if (!rcPath || !(await service.testReadable(context.distro, rcPath))) {
+      if (
+        !rcPath ||
+        !(await restrictPermissions(service, context.distro, linuxDir, Object.keys(inits))) ||
+        !(await service.testReadable(context.distro, rcPath))
+      ) {
         await cleanup()
         return plain
       }
@@ -112,6 +155,10 @@ export async function prepareWslShellLaunch(
     }
 
     const initPath = await write('fish.fish', posixFishInit())
+    if (!(await restrictPermissions(service, context.distro, linuxDir, ['fish.fish']))) {
+      await cleanup()
+      return plain
+    }
     if (!(await service.testReadable(context.distro, initPath))) {
       await cleanup()
       return plain

@@ -53,6 +53,10 @@ export class LocalBackend implements FileBackend {
     return os.homedir()
   }
 
+  localPathFor(backendPath: string): string {
+    return backendPath
+  }
+
   private checked(rawPath: string): string {
     assertAbsolutePath(this.pathStyle, rawPath)
     return normalizePath(this.pathStyle, rawPath)
