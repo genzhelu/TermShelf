@@ -347,6 +347,7 @@ export class SshSession implements Session {
     return {
       id: this.id,
       kind: this.kind,
+      environment: 'ssh',
       title: this.title,
       status: this.status,
       pathStyle: POSIX_STYLE,

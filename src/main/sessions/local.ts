@@ -5,40 +5,59 @@ import type { IPty } from '@homebridge/node-pty-prebuilt-multiarch'
 import type {
   LocalSessionRequest,
   SessionDescriptor,
+  SessionEnvironment,
   SessionKind,
   SessionStatus
 } from '@shared/types'
 import { AppError } from '../errors'
 import { LocalBackend } from '../files/local-backend'
 import type { FileBackend } from '../files/types'
-import { prepareLocalShellLaunch, type LocalShellLaunch } from '../shell/integration'
+import { prepareLocalShellLaunch } from '../shell/integration'
 import { DataBatcher } from '../util/batcher'
 import { resolveDefaultShell, type ResolvedShell } from '../util/executable'
 import type { Session, SessionEventSink } from './types'
+
+/** A fully prepared local/WSL shell launch (used by the WSL backend). */
+export interface CustomLocalLaunch {
+  file: string
+  args: string[]
+  env?: Record<string, string>
+  label: string
+  cleanup: () => Promise<void>
+}
 
 export interface LocalSessionOptions {
   id: string
   request: LocalSessionRequest
   runtimeRoot: string
   emit: SessionEventSink
+  /** When present, uses this launcher instead of the native shell resolver. */
+  launch?: () => Promise<CustomLocalLaunch>
+  backend?: FileBackend
+  homePath?: string
+  environment?: SessionEnvironment
+  label?: string
 }
 
 export class LocalSession implements Session {
   readonly id: string
   readonly kind: SessionKind = 'local'
-  readonly backend: FileBackend = new LocalBackend()
+  private readonly backendInstance: FileBackend
+  private readonly homePath: string
+  private readonly environment: SessionEnvironment
+  private readonly customLaunch: (() => Promise<CustomLocalLaunch>) | undefined
 
   private readonly request: LocalSessionRequest
   private readonly runtimeRoot: string
   private readonly emit: SessionEventSink
   private shellProcess: IPty | null = null
-  private shellLaunch: LocalShellLaunch | null = null
+  private activeCleanup: (() => Promise<void>) | null = null
   private batcher: DataBatcher | null = null
   private status: SessionStatus = 'connecting'
   private cols: number
   private rows: number
   private disposed = false
-  private shellLabel = 'Local'
+  private shellLabel: string
   private generation = 0
 
   constructor(options: LocalSessionOptions) {
@@ -48,16 +67,26 @@ export class LocalSession implements Session {
     this.emit = options.emit
     this.cols = options.request.cols
     this.rows = options.request.rows
+    this.backendInstance = options.backend ?? new LocalBackend()
+    this.homePath = options.homePath ?? os.homedir()
+    this.environment = options.environment ?? 'native'
+    this.shellLabel = options.label ?? 'Local'
+    this.customLaunch = options.launch
+  }
+
+  get backend(): FileBackend {
+    return this.backendInstance
   }
 
   descriptor(): SessionDescriptor {
     return {
       id: this.id,
       kind: this.kind,
+      environment: this.environment,
       title: this.shellLabel,
       status: this.status,
-      pathStyle: this.backend.pathStyle,
-      homePath: os.homedir()
+      pathStyle: this.backendInstance.pathStyle,
+      homePath: this.homePath
     }
   }
 
@@ -65,7 +94,8 @@ export class LocalSession implements Session {
     this.status = 'connecting'
     this.emitState()
     try {
-      await this.spawnShell(this.request.shellPath)
+      if (this.customLaunch) await this.spawnCustom()
+      else await this.spawnShell(this.request.shellPath)
       this.status = 'connected'
       this.emitState()
       return this.descriptor()
@@ -141,18 +171,65 @@ export class LocalSession implements Session {
       ...launch.env
     })
 
-    const child = pty.spawn(shell.path, launch.args, {
-      name: 'xterm-256color',
-      cols: Math.max(20, this.cols),
-      rows: Math.max(5, this.rows),
-      cwd,
-      env
-    })
+    let child: IPty
+    try {
+      child = pty.spawn(shell.path, launch.args, {
+        name: 'xterm-256color',
+        cols: Math.max(20, this.cols),
+        rows: Math.max(5, this.rows),
+        cwd,
+        env
+      })
+    } catch (error) {
+      try {
+        await launch.cleanup()
+      } catch {
+        // best effort
+      }
+      throw error
+    }
+    this.attachChild(child, `Local · ${path.basename(shell.path)}`, launch.cleanup)
+  }
 
+  /** Spawns a launch prepared by the WSL backend (wsl.exe + generated init files). */
+  private async spawnCustom(): Promise<void> {
+    const launcher = this.customLaunch
+    if (!launcher) return
+    const launch = await launcher()
+    const env: Record<string, string> = {}
+    for (const [key, value] of Object.entries(process.env)) {
+      if (typeof value === 'string') env[key] = value
+    }
+    Object.assign(env, {
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      TERM_PROGRAM: 'TermShelf',
+      ...(launch.env ?? {})
+    })
+    let child: IPty
+    try {
+      child = pty.spawn(launch.file, launch.args, {
+        name: 'xterm-256color',
+        cols: Math.max(20, this.cols),
+        rows: Math.max(5, this.rows),
+        env
+      })
+    } catch (error) {
+      try {
+        await launch.cleanup()
+      } catch {
+        // best effort
+      }
+      throw error
+    }
+    this.attachChild(child, launch.label, launch.cleanup)
+  }
+
+  private attachChild(child: IPty, label: string, cleanup: () => Promise<void>): void {
     const generation = ++this.generation
     this.shellProcess = child
-    this.shellLaunch = launch
-    this.shellLabel = `Local · ${path.basename(shell.path)}`
+    this.shellLabel = label
+    this.activeCleanup = cleanup
     this.batcher?.dispose()
     const batcher = new DataBatcher((data) => {
       this.emit({ type: 'session:data', sessionId: this.id, data })
@@ -210,7 +287,8 @@ export class LocalSession implements Session {
     this.emitState()
     await this.disposeChild()
     try {
-      await this.spawnShell(this.request.shellPath ?? undefined)
+      if (this.customLaunch) await this.spawnCustom()
+      else await this.spawnShell(this.request.shellPath ?? undefined)
       this.status = 'connected'
       this.emitState()
       return this.descriptor()
@@ -244,11 +322,11 @@ export class LocalSession implements Session {
   }
 
   private async cleanupLaunch(): Promise<void> {
-    const launch = this.shellLaunch
-    this.shellLaunch = null
-    if (launch) {
+    const cleanup = this.activeCleanup
+    this.activeCleanup = null
+    if (cleanup) {
       try {
-        await launch.cleanup()
+        await cleanup()
       } catch {
         // best effort
       }

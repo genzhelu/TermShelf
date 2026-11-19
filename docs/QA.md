@@ -21,6 +21,7 @@ the host OS + version, and attach screenshots/logs for failures.
 | Demo SSH server         | `pnpm dev:sshd` — defaults to `127.0.0.1:2222`, user `demo`, password `demo`                                                   |
 | SSH test fixtures       | a folder with a few files, a nested folder, a symlink if the host OS supports it, and one large file (≥ 1 GB) for cancel tests |
 | Remote OS for pty tests | Linux/macOS/WSL host; the demo server needs a real POSIX shell                                                                 |
+| WSL2 (Windows QA only)  | Windows 11 + WSL2 with ≥1 distribution (`wsl -l -v`); WSLg for the `ssh -Y` test. Required for §3b.                            |
 
 Commands used by this checklist (run from the repository root):
 
@@ -91,6 +92,9 @@ From `dist/TermShelf-<version>-mac-<arch>.dmg` (or `pnpm dev`).
 ## 3. Local session — PowerShell (Windows) / zsh (macOS)
 
 Create a local terminal session (new tab / **New local session**), then exercise the sidebar.
+On Windows with WSL installed the default **Auto** mode opens a **WSL** tab instead of
+PowerShell (see §3b); set Settings → **Local terminal** to **Native shell**, or disable WSL,
+to exercise this section against PowerShell.
 
 - [ ] **3.1 (Windows)** The default shell opens (PowerShell or configured `shellPath`). Type
       `pwd`, `dir` — output renders and the terminal accepts input.
@@ -114,6 +118,97 @@ Create a local terminal session (new tab / **New local session**), then exercise
 - [ ] **3.9** **Show hidden files** toggle reveals/hides dotfiles (macOS) / hidden-attribute files
       (Windows) and the choice survives a restart.
 - [ ] **3.10** Sort by name/size/mtime and toggle asc/desc; sorting persists across restarts.
+
+## 3b. WSL session — Windows 11 + WSL2 default terminal
+
+TermShelf can use a **WSL distribution as the default local terminal** on Windows. The
+terminal runs a real Linux shell inside WSL, while the file sidebar browses the _same_ Linux
+filesystem through the Windows UNC mount (`\\wsl.localhost\<distro>\…`, with `\\wsl$\…`
+as fallback). That shared namespace is what makes OSC 7 folder sync, drag-drop uploads and
+downloads agree on paths.
+
+Prerequisites:
+
+- Windows 11 with WSL2 and at least one distribution (`wsl -l -v` lists it; the default is
+  marked with `*`). WSLg (bundled with WSL2) is needed only for the `ssh -Y` test.
+- App settings: **Local terminal** = `Auto (WSL when available)` (default) or `WSL`.
+  `Auto` prefers WSL unless a native shell path is configured; `Native shell` always uses
+  PowerShell.
+
+Setup sanity check (PowerShell):
+
+```powershell
+wsl --status                 # WSL 2, default distribution
+wsl -l -v                    # installed distros; '*' marks the default
+wsl -d Ubuntu -- pwd         # a working shell (replace Ubuntu with your distro)
+```
+
+- [ ] **3b.1 Default WSL tab** — With Auto (default) and WSL installed, open a new local
+      terminal: a WSL shell opens instead of PowerShell. The environment is labelled WSL
+      (sidebar footer chip says **WSL**, tab title shows `WSL · <distro>`), not "Local".
+- [ ] **3b.2 Shell starts in the Linux home** — `pwd` prints `/home/<user>` (not `C:\…`,
+      `\\wsl…` or `/mnt/c/…`), `echo $WSL_DISTRO_NAME` matches the distribution and
+      `echo $TERM` is `xterm-256color`. `ls -la ~` renders; typing, Ctrl+C and window resizing
+      all behave like a normal terminal.
+- [ ] **3b.3 Sidebar shows the Linux filesystem** — The sidebar opens at the Linux home
+      (`/home/<user>`) with POSIX breadcrumbs and `/` as the filesystem root. The sidebar hint
+      says the files are inside the WSL distribution. Navigate to `/`, `/tmp` and `/etc`; the
+      listing matches `ls` in the terminal. New folder / rename / delete from the sidebar are
+      immediately visible in the shell (`ls -la /tmp/...`).
+- [ ] **3b.4 Folder sync (OSC 7)** — With follow mode enabled, `cd /tmp` in the WSL terminal:
+      the sidebar follows to `/tmp` after the prompt returns. `cd ~` returns to the home
+      directory. Toggle follow mode off and `cd /etc` — the sidebar stays where it was.
+- [ ] **3b.5 Drag & drop Windows → WSL** — With the sidebar on a WSL folder, drag a file from
+      Explorer onto it: the "Drop to upload" overlay appears and dropping copies the file into
+      that Linux folder (refresh if needed). Verify from the WSL shell (`cat ~/dropped.txt`
+      matches the Windows file byte-for-byte). Repeat with a folder (recursive) and several
+      files selected at once; the transfer drawer shows progress.
+- [ ] **3b.6 Download WSL → Windows** — Select files/folders in the WSL sidebar and choose
+      **Download selected…**; pick a Windows destination. Contents match, directory structure is
+      preserved, and the downloaded copy's mtime is the **download completion time** (not the
+      Linux file's mtime — same rule as remote downloads, see "Downloaded-file timestamps").
+      Downloading into a folder with existing files opens the conflict dialog
+      (Overwrite / Keep both / Skip / Cancel) and each option behaves as documented in §5.
+- [ ] **3b.7 `ssh -Y` through WSLg** — From the WSL terminal run `ssh -Y <user>@<linux-host>`
+      and start a GUI program (`xeyes`, `xclock`): a window appears on the Windows desktop via
+      WSLg. If no X server is available the command fails with an X11 error but the terminal
+      stays usable. Note: a WSL tab's sidebar always shows **WSL** files; for the remote
+      server's files use a separate **SSH session** tab (SFTP), not `ssh` typed in the WSL tab.
+- [ ] **3b.8 Settings: WSL / Native / distro switching** — Settings → **Local terminal**
+      offers `Auto`, `Native shell` and `WSL`; the WSL option is disabled (with a "WSL
+      unavailable: …" hint) when `wsl.exe`/distributions are missing. WSL mode shows a **WSL
+      distribution** dropdown with `Default (<distro>)` plus one entry per installed distro.
+      Switch to Native → a new local tab is PowerShell. Switch back to WSL with a specific
+      distro → a new tab opens that distro (tab label names it). Restart the app: the choices
+      persist. Changing this setting affects **new** terminals; already-open tabs are unchanged.
+- [ ] **3b.9 Multiple distributions** — With ≥ 2 distros installed, select each in the
+      dropdown: `echo $WSL_DISTRO_NAME` in the new tab matches, and the sidebar home is that
+      distro's `/home/<user>`. The `Default` option follows the `wsl -l -v` star row.
+- [ ] **3b.10 WSL-unavailable fallback** — Make WSL unusable (e.g. on a machine without WSL,
+      or after unregistering the last distro on a scratch VM). Open a new terminal with mode
+      `WSL` or `Auto`: a warning toast appears ("WSL terminal unavailable (…); using the native
+      shell instead.") and a native PowerShell shell opens — the app must never end up without
+      a terminal. Settings shows the same error in the WSL hint and disables the WSL option.
+      The native shell's sidebar shows Windows files (degraded but usable).
+- [ ] **3b.11 Filename limitation over UNC** — Files inside WSL whose names are invalid on
+      Windows (`:` `*` `?` `"` `<` `>` `|` `\`, reserved names such as `CON`, trailing dots or
+      spaces) cannot be addressed through `\\wsl.localhost`/`\\wsl$`. The sidebar may skip
+      or fail to resolve such entries even though `ls` shows them. Create one
+      (`touch '/tmp/a:b*'`), refresh the sidebar and navigate the parent folder: the app must
+      not crash, must keep other entries working, and downloads must either sanitize the name on
+      the Windows side or report a readable error. Document any skipped entry in the QA report.
+- [ ] **3b.12 Tab coexistence** — Keep a native PowerShell tab, a WSL tab and an SSH tab open
+      at once; switching tabs switches the sidebar backend correctly (Local / WSL / SFTP) and
+      closing one tab does not affect the others.
+- [ ] **3b.13 Cleanup on close** — Close the WSL tab: the `wsl.exe` process disappears from
+      Task Manager and the generated shell-integration scripts under
+      `/tmp/termshelf-<session>/` inside the distro are removed (`ls /tmp | grep termshelf`).
+- [ ] **3b.14 Shell integration / degradation** — For bash, zsh and fish the OSC 7 hook is
+      active (prompt hook installs without errors, sidebar follows `cd`). If the distribution's
+      login shell is unsupported (`/bin/sh`, `ksh`), the tab still opens as a plain WSL shell
+      without sidebar follow — expected degradation, not a failure.
+
+---
 
 ## 4. Upload — drag and drop from Explorer / Finder
 
@@ -261,8 +356,8 @@ Save an SSH profile **with** the password (and a passphrase-protected key profil
 
 ## 12. Settings, logs and stability
 
-- [ ] **12.1** Change font size, download folder, default shell path and confirm-delete; all
-      persist across restart.
+- [ ] **12.1** Change font size, download folder, default shell path, local terminal mode
+      (Auto/Native/WSL), WSL distribution and confirm-delete; all persist across restart.
 - [ ] **12.2** Window size/position/sidebar width/transfer drawer height restore after restart;
       values are clamped to sane minimums when the config is edited by hand.
 - [ ] **12.3** Corrupt the config file (write invalid JSON), start the app: it recovers with
@@ -291,13 +386,15 @@ Save an SSH profile **with** the password (and a passphrase-protected key profil
 
 ## Appendix A — File locations
 
-| Item                      | Windows 11                                        | macOS                                                 | Linux                             |
-| ------------------------- | ------------------------------------------------- | ----------------------------------------------------- | --------------------------------- |
-| Config + secrets          | `%APPDATA%\TermShelf\config.json`                 | `~/Library/Application Support/TermShelf/config.json` | `~/.config/TermShelf/config.json` |
-| Logs                      | `%APPDATA%\TermShelf\logs\`                       | `~/Library/Application Support/TermShelf/logs/`       | `~/.config/TermShelf/logs/`       |
-| Runtime shell integration | `%APPDATA%\TermShelf\runtime\`                    | `~/Library/Application Support/TermShelf/runtime/`    | `~/.config/TermShelf/runtime/`    |
-| Demo host key             | `.dev-sshd/host.key` (repo root, gitignored)      | same                                                  | same                              |
-| Demo SFTP root            | `demo-remote/` (repo root, gitignored by default) | same                                                  | same                              |
+| Item                      | Windows 11                                                                   | macOS                                                 | Linux                             |
+| ------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------- |
+| Config + secrets          | `%APPDATA%\TermShelf\config.json`                                            | `~/Library/Application Support/TermShelf/config.json` | `~/.config/TermShelf/config.json` |
+| Logs                      | `%APPDATA%\TermShelf\logs\`                                                  | `~/Library/Application Support/TermShelf/logs/`       | `~/.config/TermShelf/logs/`       |
+| Runtime shell integration | `%APPDATA%\TermShelf\runtime\`                                               | `~/Library/Application Support/TermShelf/runtime/`    | `~/.config/TermShelf/runtime/`    |
+| Demo host key             | `.dev-sshd/host.key` (repo root, gitignored)                                 | same                                                  | same                              |
+| Demo SFTP root            | `demo-remote/` (repo root, gitignored by default)                            | same                                                  | same                              |
+| WSL distro files          | `\\wsl.localhost\<distro>\…` (fallback `\\wsl$\<distro>\…`)                  | —                                                     | —                                 |
+| WSL integration scripts   | inside the distro: `/tmp/termshelf-<session>/` (removed when the tab closes) | —                                                     | —                                 |
 
 (The Electron userData folder name follows `app.getPath('userData')`; on Windows it can be
 `%APPDATA%\termshelf` if the app was ever launched by a build with a lowercase name — check
@@ -341,6 +438,8 @@ Attachments: screenshot(s), config.json (redacted), logs/ entries, terminal outp
 ## Exit criteria
 
 - All **PASS** boxes on Windows 11 and macOS; Linux smoke pass (items 1, 3, 6, 10, 11).
+- On Windows, §3b (WSL default terminal) is **required** when WSL2 + a distribution are
+  available on the QA machine; record when the environment makes an item inapplicable.
 - No crashes, no unhandled-rejection dialogs, no plaintext secrets in config/logs.
 - Any deviation is documented in the QA report with severity and a linked issue.
 

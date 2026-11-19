@@ -12,6 +12,7 @@ function makeTab(descriptor: SessionDescriptor, followCwd: boolean): TabState {
   return {
     id: descriptor.id,
     kind: descriptor.kind,
+    environment: descriptor.environment,
     title:
       sanitizeTitle(descriptor.title) || (descriptor.kind === 'local' ? 'Local terminal' : 'SSH'),
     status: descriptor.status,
@@ -76,7 +77,12 @@ export const createSessionSlice: SliceCreator<SessionSlice> = (set, get) => {
     createLocalTab: async (options): Promise<string | null> => {
       const { cols, rows } = get().estimateTerminalSize()
       const settings = get().config?.settings ?? DEFAULT_SETTINGS
-      const request: LocalSessionRequest = { cols, rows }
+      const request: LocalSessionRequest = {
+        cols,
+        rows,
+        terminal: settings.localTerminal,
+        wslDistro: settings.wslDistro
+      }
       const shellPath = settings.shellPath?.trim()
       if (shellPath) request.shellPath = shellPath
       if (options?.cwd) request.cwd = options.cwd

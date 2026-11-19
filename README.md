@@ -17,9 +17,11 @@ Windows and macOS builds.
 
 - **Terminal first** — real PTY (ConPTY on Windows, forkpty on macOS), ANSI-256/truecolor,
   10k scrollback, resizable, tabs that keep their scrollback when hidden, configurable font
-  size, clickable links, copy/paste and right-click menu.
+  size, clickable links, copy/paste and right-click menu. On Windows, **WSL is the default
+  local terminal** when installed (switchable in Settings → Terminal), including full Linux
+  folder sync and drag-and-drop transfers.
 - **File sidebar synced to the shell** — the folder view follows `cd` through OSC 7 shell
-  integration. Supported shells: bash, zsh, fish and PowerShell. A per-tab toggle switches
+  integration. Supported shells: bash, zsh, fish, PowerShell, and WSL's login shells. A per-tab toggle switches
   between "follow terminal" and manual browsing; the editable path bar covers unsupported
   shells (`cmd.exe`, `sh`).
 - **Drag-and-drop transfer** — drop OS files _or folders_ onto the sidebar to copy them into
@@ -74,10 +76,10 @@ pnpm 11 are the only build prerequisites; the native PTY ships as a prebuilt N-A
 no compiler is needed.
 
 ```bash
-# On the Mac (source archive is in dist/termshelf-0.1.3-source.tar.gz,
+# On the Mac (source archive is in dist/termshelf-0.1.4-source.tar.gz,
 # or use the repo checkout)
-tar -xzf termshelf-0.1.3-source.tar.gz
-cd termshelf-0.1.3
+tar -xzf termshelf-0.1.4-source.tar.gz
+cd termshelf-0.1.4
 brew install node@22                      # or nvm install 22
 export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 npm install -g pnpm@11
@@ -93,8 +95,8 @@ pnpm build
 pnpm exec electron-builder --mac --arm64   # or --x64, or omit for both arches
 ```
 
-Outputs land in `dist/` as `TermShelf-0.1.3-mac-arm64.dmg` / `.zip` and
-`TermShelf-0.1.3-mac-x64.dmg` / `.zip`; the unpacked app is under `dist/mac-arm64/` or
+Outputs land in `dist/` as `TermShelf-0.1.4-mac-arm64.dmg` / `.zip` and
+`TermShelf-0.1.4-mac-x64.dmg` / `.zip`; the unpacked app is under `dist/mac-arm64/` or
 `dist/mac/`. Launch a locally built app with `open dist/mac-arm64/TermShelf.app`.
 
 Because builds are **unsigned**, an app downloaded from CI is quarantined by Gatekeeper:
@@ -102,7 +104,7 @@ right-click the app → **Open**, or run
 `xattr -dr com.apple.quarantine /Applications/TermShelf.app`. The first time you browse
 Desktop/Documents/Downloads, macOS may ask you to grant file access; allow it for the sidebar.
 Saved SSH secrets go to the macOS Keychain. Alternatively push the repository to GitHub and
-push a tag (`git tag v0.1.3 && git push origin v0.1.3`): the release workflow builds both Mac
+push a tag (`git tag v0.1.4 && git push origin v0.1.4`): the release workflow builds both Mac
 architectures and publishes a GitHub **Release** with the DMGs, ZIPs and checksums attached,
 so other macOS users can install without a GitHub account.
 
@@ -154,8 +156,8 @@ see [docs/BUILDING.md](docs/BUILDING.md) for signing, notarization and CI detail
 
 Artifacts produced and verified in this checkout:
 
-- `dist/TermShelf-0.1.3-linux-x86_64.AppImage` — built and smoke-tested headlessly.
-- `dist/TermShelf-0.1.3-win-x64.zip` — Windows x64 portable build (PE32+ verified; cannot be
+- `dist/TermShelf-0.1.4-linux-x86_64.AppImage` — built and smoke-tested headlessly.
+- `dist/TermShelf-0.1.4-win-x64.zip` — Windows x64 portable build (PE32+ verified; cannot be
   executed on this Linux host).
 - The macOS `.dmg`/`.zip` must be built on macOS (or the provided CI workflow); macOS
   packaging is not possible on Linux.
@@ -168,7 +170,8 @@ src/renderer        React 19 + zustand + xterm.js 6; tabbed terminals, file side
 src/preload         contextBridge API (window.termshelf) + webUtils.getPathForFile for DnD.
 src/main            Electron main process:
   sessions/         LocalSession (node-pty) and SshSession (ssh2 pty + SFTP), session manager
-  files/            FileBackend contract: LocalBackend and SftpBackend
+  files/            FileBackend contract: LocalBackend, WslBackend and SftpBackend
+  wsl/              WSL detection/context, UNC path mapping, shell launch/integration
   transfers/        scan → plan → conflict policy → streams → progress/cancel/cleanup
   shell/            per-shell init scripts for clean OSC 7 CWD reporting
   store/            atomic JSON config: settings, profiles, encrypted secrets, known hosts
@@ -184,9 +187,15 @@ never constructs filesystem paths itself.
 
 ## Platform notes and limitations
 
-- **Windows**: PowerShell 7 (`pwsh`) or Windows PowerShell is the default shell and gets
-  folder sync; `cmd.exe` works in manual-folder mode. Downloads sanitize Windows-illegal
-  characters and reserved device names. Unsigned builds show SmartScreen warnings.
+- **Windows**: when WSL is installed, new local tabs start the default/selected WSL
+  distribution (or Auto picks it), and the sidebar browses Linux files through the
+  `\\wsl.localhost\<distro>` mount. `cd` sync, drag-and-drop uploads from Explorer,
+  downloads and the normal transfer rules all work. Choose `Native` in Settings → Terminal to
+  get PowerShell 7 / Windows PowerShell instead; `cmd.exe` works in manual-folder mode.
+  WSL files with names Windows cannot address (e.g. containing `:`) may be hidden or fail to
+  open through the UNC bridge; very large WSL directory trees can also be slower than native
+  browsing. Downloads sanitize Windows-illegal characters and reserved device names. Unsigned
+  builds show SmartScreen warnings.
 - **macOS**: zsh/bash/fish login shells get folder sync (a generated `ZDOTDIR` preserves
   user startup files). Unsigned apps must be opened with right-click → Open (or after
   clearing quarantine). Browsing protected folders (Desktop/Documents/Downloads) may trigger
@@ -195,14 +204,19 @@ never constructs filesystem paths itself.
   remotes work for the terminal and SFTP; remote-folder sync falls back to manual browsing.
   Shell integration is best-effort: if SFTP, shell detection or init-file verification fails,
   the session falls back to a plain shell and the sidebar remains fully usable manually.
-- **Running `ssh` inside a local terminal does not repoint the sidebar.** Use the app's
+- **X11/GUI apps (`ssh -Y`)**: run `ssh -Y <host>` inside a local terminal; on Windows the
+  default WSL tab is ideal because WSLg supplies the X server and displays the windows. The
+  app's own SSH sessions do not implement X11 forwarding. Remember that the sidebar in the
+  WSL tab shows WSL files, not files on the remote host; use a separate **New SSH Session**
+  tab for the remote SFTP sidebar and transfers.
+- **Running `ssh` inside a native local tab does not repoint the sidebar.** Use the app's
   **New SSH Session** flow (server icon, `Ctrl/Cmd+Shift+T`) so it can open SFTP with the
-  same credentials and follow the remote shell's folder. This is also why X11-forwarding
-  commands like `ssh -Y` belong in a local terminal, while file transfers belong in an app
-  SSH session.
+  same credentials and follow the remote shell's folder.
 - **Scope for v1**: no jump hosts/port forwarding/X11, no built-in editor, no upload
-  resume/retry, no drag-out to the desktop, no session restore on launch, no light theme, no
-  WSL/Git-Bash as _local_ shell backing (they remain valid SSH targets). Keyboard-interactive
+  resume/retry, no drag-out to the desktop, no session restore on launch, no light theme, and
+  no native X11 forwarding inside app SSH sessions. WSL file browsing uses the Windows UNC
+  mount, so Linux filenames Windows cannot address are unsupported; choosing a specific shell
+  inside the distro is not exposed (the distro's login shell is used). Keyboard-interactive
   auth is limited to a single non-echo password prompt.
 - Electron bundle size is ~100 MB; terminal rendering uses xterm's DOM renderer for stability
   (WebGL can be added later).

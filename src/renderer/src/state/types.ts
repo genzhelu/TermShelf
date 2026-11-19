@@ -6,6 +6,7 @@ import type {
   Platform,
   PublicConfig,
   SessionDescriptor,
+  SessionEnvironment,
   SessionKind,
   SessionStatus,
   Settings,
@@ -30,6 +31,7 @@ export type TerminalFollowMode = 'sync' | 'manual'
 export interface TabState {
   id: string
   kind: SessionKind
+  environment: SessionEnvironment
   title: string
   status: SessionStatus
   pathStyle: 'posix' | 'win32'

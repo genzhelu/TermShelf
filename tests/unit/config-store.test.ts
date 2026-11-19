@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { SshProfile } from '@shared/types'
+import type { LocalTerminalMode, SshProfile } from '@shared/types'
 import { AppError } from '../../src/main/errors'
 import {
   CONFIG_VERSION,
@@ -412,5 +412,110 @@ describe('ConfigStore settings, UI and recovery', () => {
     expect(store.getUi().sortKey).toBe('name')
     expect(store.listProfiles()).toHaveLength(1)
     expect(store.listKnownHosts()).toEqual([])
+  })
+})
+
+describe('ConfigStore local terminal (WSL) settings', () => {
+  it('defaults to auto terminal selection and the WSL default distro', async () => {
+    const store = await openStore()
+    const settings = store.getSettings()
+    expect(settings.localTerminal).toBe('auto')
+    expect(settings.wslDistro).toBeNull()
+
+    // Defaults alone are not persisted; force a write and check the serialized shape.
+    store.setWindowBounds({ x: 10, y: 20, width: 1280, height: 800 })
+    await store.flush()
+    const config = await readConfig()
+    expect(config.settings.localTerminal).toBe('auto')
+    expect(config.settings.wslDistro).toBeNull()
+  })
+
+  it('applies and persists valid localTerminal / wslDistro updates', async () => {
+    const store = await openStore()
+    expect(store.updateSettings({ localTerminal: 'wsl' }).localTerminal).toBe('wsl')
+    expect(store.updateSettings({ wslDistro: '  Ubuntu-22.04  ' }).wslDistro).toBe('Ubuntu-22.04')
+    expect(store.updateSettings({ localTerminal: 'native' }).localTerminal).toBe('native')
+    await store.flush()
+
+    const reloaded = await openStore()
+    expect(reloaded.getSettings().localTerminal).toBe('native')
+    expect(reloaded.getSettings().wslDistro).toBe('Ubuntu-22.04')
+  })
+
+  it('ignores unknown modes and validates distro values without clobbering state', async () => {
+    const store = await openStore()
+    store.updateSettings({ localTerminal: 'wsl', wslDistro: 'Debian' })
+
+    // Unknown enum values are ignored (state is preserved).
+    expect(
+      store.updateSettings({ localTerminal: 'hyper-v' as unknown as LocalTerminalMode })
+        .localTerminal
+    ).toBe('wsl')
+    // Non-string distro values are ignored.
+    expect(store.updateSettings({ wslDistro: 42 as unknown as string }).wslDistro).toBe('Debian')
+    // Empty/whitespace strings and null mean "the WSL default distro".
+    expect(store.updateSettings({ wslDistro: '   ' }).wslDistro).toBeNull()
+    expect(store.updateSettings({ wslDistro: 'Debian' }).wslDistro).toBe('Debian')
+    expect(store.updateSettings({ wslDistro: null }).wslDistro).toBeNull()
+    // An 'auto' patch does not disturb the distro field unless it is provided.
+    expect(store.updateSettings({ localTerminal: 'auto' }).wslDistro).toBeNull()
+  })
+
+  it('loads persisted localTerminal / wslDistro from the config file', async () => {
+    const config = {
+      version: CONFIG_VERSION,
+      settings: {
+        ...defaultSettings(downloadDir),
+        localTerminal: 'wsl',
+        wslDistro: 'Ubuntu-22.04'
+      },
+      ui: defaultUiState(),
+      profiles: [],
+      knownHosts: [],
+      secrets: {}
+    }
+    await writeFile(configPath, JSON.stringify(config), 'utf8')
+
+    const store = await openStore()
+    expect(store.getSettings().localTerminal).toBe('wsl')
+    expect(store.getSettings().wslDistro).toBe('Ubuntu-22.04')
+    await store.flush()
+    const reloaded = await openStore()
+    expect(reloaded.getSettings()).toMatchObject({
+      localTerminal: 'wsl',
+      wslDistro: 'Ubuntu-22.04'
+    })
+  })
+
+  it('sanitizes invalid persisted localTerminal / wslDistro values', async () => {
+    const invalid = {
+      version: CONFIG_VERSION,
+      settings: {
+        ...defaultSettings(downloadDir),
+        localTerminal: 'not-a-mode',
+        wslDistro: 7
+      },
+      ui: defaultUiState(),
+      profiles: [],
+      knownHosts: [],
+      secrets: {}
+    }
+    await writeFile(configPath, JSON.stringify(invalid), 'utf8')
+    const fallbackStore = await openStore()
+    expect(fallbackStore.getSettings().localTerminal).toBe('auto')
+    expect(fallbackStore.getSettings().wslDistro).toBeNull()
+
+    const blank = {
+      version: CONFIG_VERSION,
+      settings: { ...defaultSettings(downloadDir), localTerminal: 'wsl', wslDistro: '   ' },
+      ui: defaultUiState(),
+      profiles: [],
+      knownHosts: [],
+      secrets: {}
+    }
+    await writeFile(configPath, JSON.stringify(blank), 'utf8')
+    const blankStore = await openStore()
+    expect(blankStore.getSettings().localTerminal).toBe('wsl')
+    expect(blankStore.getSettings().wslDistro).toBeNull()
   })
 })

@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type {
   AuthMethod,
+  LocalTerminalMode,
   HostKeyInfo,
   HostKeyRecord,
   Settings,
@@ -71,6 +72,7 @@ interface PersistedConfig {
 const SORT_KEYS: readonly SortKey[] = ['name', 'size', 'mtime']
 const SORT_DIRS: readonly SortDir[] = ['asc', 'desc']
 const AUTH_METHODS: readonly AuthMethod[] = ['password', 'privateKey', 'agent']
+const LOCAL_TERMINAL_MODES: readonly LocalTerminalMode[] = ['auto', 'native', 'wsl']
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -118,6 +120,8 @@ export function defaultSettings(defaultDownloadDir: string): Settings {
     showHiddenFiles: false,
     fontSize: 13,
     shellPath: null,
+    localTerminal: 'auto',
+    wslDistro: null,
     confirmDelete: true
   }
 }
@@ -141,6 +145,15 @@ function sanitizeSettings(value: unknown, fallback: Settings): Settings {
     showHiddenFiles: asBoolean(record.showHiddenFiles, fallback.showHiddenFiles),
     fontSize: clampInt(record.fontSize, 8, 32, fallback.fontSize),
     shellPath: asNullableString(record.shellPath, fallback.shellPath),
+    localTerminal: LOCAL_TERMINAL_MODES.includes(record.localTerminal as LocalTerminalMode)
+      ? (record.localTerminal as LocalTerminalMode)
+      : fallback.localTerminal,
+    wslDistro:
+      typeof record.wslDistro === 'string'
+        ? record.wslDistro.trim() || null
+        : record.wslDistro === null
+          ? null
+          : fallback.wslDistro,
     confirmDelete: asBoolean(record.confirmDelete, fallback.confirmDelete)
   }
 }
@@ -387,6 +400,8 @@ export class ConfigStoreImpl implements ConfigStore {
       showHiddenFiles: this.settings.showHiddenFiles,
       fontSize: this.settings.fontSize,
       shellPath: this.settings.shellPath,
+      localTerminal: this.settings.localTerminal,
+      wslDistro: this.settings.wslDistro,
       confirmDelete: this.settings.confirmDelete
     }
     if (record.defaultDownloadDir !== undefined) {
@@ -404,6 +419,21 @@ export class ConfigStoreImpl implements ConfigStore {
     }
     if (record.shellPath !== undefined) {
       next.shellPath = asNullableString(record.shellPath, next.shellPath)
+    }
+    if (record.localTerminal !== undefined) {
+      if (
+        typeof record.localTerminal === 'string' &&
+        LOCAL_TERMINAL_MODES.includes(record.localTerminal as LocalTerminalMode)
+      ) {
+        next.localTerminal = record.localTerminal as LocalTerminalMode
+      }
+    }
+    if (record.wslDistro !== undefined) {
+      if (typeof record.wslDistro === 'string') {
+        next.wslDistro = record.wslDistro.trim() || null
+      } else if (record.wslDistro === null) {
+        next.wslDistro = null
+      }
     }
     if (record.confirmDelete !== undefined) {
       next.confirmDelete = asBoolean(record.confirmDelete, next.confirmDelete)

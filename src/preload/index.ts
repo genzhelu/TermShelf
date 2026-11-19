@@ -68,6 +68,9 @@ const api: TermshelfApi = {
   clipboard: {
     readText: () => ipcRenderer.invoke(IPC.clipboardRead),
     writeText: (text) => ipcRenderer.invoke(IPC.clipboardWrite, { text })
+  },
+  wsl: {
+    info: () => ipcRenderer.invoke(IPC.wslInfo)
   }
 }
 

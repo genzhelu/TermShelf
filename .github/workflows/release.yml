@@ -1,7 +1,7 @@
 name: Release
 
 # Build distributable installers for all three desktop platforms.
-#   * Push a tag like v0.1.3 to build the artifacts and publish a GitHub Release
+#   * Push a tag like v0.1.4 to build the artifacts and publish a GitHub Release
 #     (macOS users can then download the .dmg directly from the Releases page).
 #   * Or run the workflow manually; artifacts stay on the workflow run.
 # Artifacts are unsigned by default. To sign later, see "Code signing" in
@@ -204,6 +204,10 @@ jobs:
           ### Windows 10/11 (x64)
           Download and run `TermShelf-<version>-win-x64.exe`. Windows SmartScreen will warn
           until the app is code-signed; choose "More info" → "Run anyway".
+
+          When WSL is installed, new local terminals default to the WSL distribution
+          (Settings → Default local terminal switches to native PowerShell). In that WSL tab,
+          `ssh -Y` works through WSLg; use a separate SSH session for the remote SFTP sidebar.
 
           ### Linux (x64, development)
           `TermShelf-<version>-linux-x86_64.AppImage`, made executable and run.

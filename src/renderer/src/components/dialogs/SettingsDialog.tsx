@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import type { Settings } from '@shared/types'
+import { useEffect, useState } from 'react'
+import type { Settings, WslInfo } from '@shared/types'
 import { errorMessage, getApi, safeCall } from '../../lib/api'
 import { useAppStore } from '../../state/appStore'
 import { DEFAULT_SETTINGS, clampFontSize } from '../../state/defaults'
@@ -27,6 +27,30 @@ export function SettingsDialog(): React.JSX.Element {
     ...(config?.settings ?? {})
   }))
   const [busy, setBusy] = useState(false)
+  const [wslInfo, setWslInfo] = useState<WslInfo | null>(null)
+  const [wslLoading, setWslLoading] = useState(platform === 'win32')
+  const [wslError, setWslError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (platform !== 'win32') return
+    let cancelled = false
+    setWslLoading(true)
+    void safeCall(() => getApi().wsl.info()).then((result) => {
+      if (cancelled) return
+      setWslLoading(false)
+      if (result.ok) {
+        setWslInfo(result.data)
+        setWslError(null)
+      } else {
+        setWslError(errorMessage(result.error))
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [platform])
+
+  const wslAvailable = wslInfo?.available ?? false
 
   const update = <K extends keyof Settings>(key: K, value: Settings[K]): void => {
     setDraft((current) => ({ ...current, [key]: value }))
@@ -192,6 +216,77 @@ export function SettingsDialog(): React.JSX.Element {
           </div>
 
           <div className="field">
+            <label className="field__label" htmlFor="settings-local-terminal">
+              Default local terminal
+            </label>
+            <select
+              id="settings-local-terminal"
+              className="input select"
+              data-testid="settings-local-terminal"
+              value={draft.localTerminal}
+              disabled={busy}
+              onChange={(event) => {
+                const next = event.target.value as Settings['localTerminal']
+                update('localTerminal', next)
+                if (next === 'native') update('wslDistro', null)
+              }}
+            >
+              <option value="auto">
+                {platform === 'win32' ? 'Auto (WSL when available)' : 'Auto (native shell)'}
+              </option>
+              <option value="native">Native shell</option>
+              {platform === 'win32' ? (
+                <option value="wsl" disabled={!wslAvailable}>
+                  WSL
+                </option>
+              ) : null}
+            </select>
+            <span className="field__hint">
+              Applies to new local terminals. In a WSL tab, `ssh -Y` works through WSLg, but the
+              sidebar shows WSL files — use a separate SSH session for remote SFTP.
+            </span>
+            {platform === 'win32' ? (
+              wslLoading ? (
+                <span className="field__hint">
+                  <Icon name="loader" size={11} className="spin" /> Detecting WSL…
+                </span>
+              ) : wslError ? (
+                <span className="field__hint">WSL unavailable: {wslError}</span>
+              ) : wslInfo && !wslInfo.available ? (
+                <span className="field__hint">
+                  WSL unavailable: {wslInfo.error ?? 'no distributions found'}
+                </span>
+              ) : null
+            ) : null}
+          </div>
+
+          {platform === 'win32' && wslAvailable && draft.localTerminal !== 'native' ? (
+            <div className="field">
+              <label className="field__label" htmlFor="settings-wsl-distro">
+                WSL distribution
+              </label>
+              <select
+                id="settings-wsl-distro"
+                className="input select"
+                data-testid="settings-wsl-distro"
+                value={draft.wslDistro ?? ''}
+                disabled={busy}
+                onChange={(event) => update('wslDistro', event.target.value || null)}
+              >
+                <option value="">
+                  Default{wslInfo?.defaultDistro ? ` (${wslInfo.defaultDistro})` : ''}
+                </option>
+                {(wslInfo?.distros ?? []).map((distro) => (
+                  <option key={distro} value={distro}>
+                    {distro}
+                  </option>
+                ))}
+              </select>
+              <span className="field__hint">Used for new WSL terminal tabs.</span>
+            </div>
+          ) : null}
+
+          <div className="field">
             <label className="field__label" htmlFor="settings-shell">
               Shell override
             </label>
@@ -206,7 +301,8 @@ export function SettingsDialog(): React.JSX.Element {
               }
             />
             <span className="field__hint">
-              Applies to new local terminals. Leave empty to use the system default.
+              Applies to new native terminals only (Auto with a shell override/or Native). Leave
+              empty to use the system default.
             </span>
           </div>
         </section>

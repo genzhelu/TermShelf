@@ -5,6 +5,20 @@ export type PathStyle = 'posix' | 'win32'
 
 export type SessionKind = 'local' | 'ssh'
 
+/** Which kind of machine the terminal's shell and file backend live on. */
+export type SessionEnvironment = 'native' | 'wsl' | 'ssh'
+
+/** Which local terminal implementation new tabs should use. */
+export type LocalTerminalMode = 'auto' | 'native' | 'wsl'
+
+export interface WslInfo {
+  available: boolean
+  distros: string[]
+  /** Name of the default distro when it could be determined, else null. */
+  defaultDistro: string | null
+  error?: string
+}
+
 export type SessionStatus = 'connecting' | 'connected' | 'disconnected' | 'error' | 'ended'
 
 export type EntryKind = 'file' | 'dir' | 'symlink' | 'other'
@@ -32,6 +46,9 @@ export type AppErrorCode =
   | 'SSH_SFTP_UNAVAILABLE'
   | 'SSH_DISCONNECTED'
   | 'SSH_KEYBOARD_INTERACTIVE_UNSUPPORTED'
+  | 'WSL_UNAVAILABLE'
+  | 'WSL_DISTRO_NOT_FOUND'
+  | 'WSL_FS_UNAVAILABLE'
   | 'SHELL_SPAWN_FAILED'
   | 'FS_NOT_FOUND'
   | 'FS_PERMISSION_DENIED'
@@ -80,6 +97,7 @@ export interface DirListing {
 export interface SessionDescriptor {
   id: string
   kind: SessionKind
+  environment: SessionEnvironment
   title: string
   status: SessionStatus
   pathStyle: PathStyle
@@ -91,6 +109,10 @@ export interface LocalSessionRequest {
   rows: number
   shellPath?: string
   cwd?: string
+  /** Overrides the saved local terminal mode for this tab. */
+  terminal?: LocalTerminalMode
+  /** WSL distro override; null/undefined means the WSL default distro. */
+  wslDistro?: string | null
 }
 
 export interface SshProfile {
@@ -144,6 +166,8 @@ export interface Settings {
   showHiddenFiles: boolean
   fontSize: number
   shellPath: string | null
+  localTerminal: LocalTerminalMode
+  wslDistro: string | null
   confirmDelete: boolean
 }
 

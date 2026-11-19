@@ -319,11 +319,15 @@ export function Sidebar(): React.JSX.Element {
               title={
                 tab.kind === 'ssh'
                   ? 'These are files on the remote host (SFTP)'
-                  : 'These are files on this computer. Use New SSH Session to browse a remote host.'
+                  : tab.environment === 'wsl'
+                    ? 'These are files inside the WSL distribution'
+                    : 'These are files on this computer. Use New SSH Session to browse a remote host.'
               }
             >
               <Icon name={tab.kind === 'ssh' ? 'server' : 'terminal'} size={11} />
-              <span>{tab.kind === 'ssh' ? 'SFTP' : 'Local'}</span>
+              <span>
+                {tab.kind === 'ssh' ? 'SFTP' : tab.environment === 'wsl' ? 'WSL' : 'Local'}
+              </span>
             </span>
             <span className="sidebar__count">
               {formatCount(entries.length)} {pluralize(entries.length, 'item')}

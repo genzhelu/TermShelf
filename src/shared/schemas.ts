@@ -15,7 +15,9 @@ export const localSessionRequestSchema = z.object({
   cols: z.number().int().min(1).max(1000),
   rows: z.number().int().min(1).max(1000),
   shellPath: z.string().min(1).max(4096).optional(),
-  cwd: z.string().min(1).max(4096).optional()
+  cwd: z.string().min(1).max(4096).optional(),
+  terminal: z.enum(['auto', 'native', 'wsl']).optional(),
+  wslDistro: z.string().min(1).max(128).nullable().optional()
 })
 
 export const sshProfileSchema = z.object({
@@ -80,6 +82,8 @@ export const settingsSchema = z.object({
   showHiddenFiles: z.boolean(),
   fontSize: z.number().int().min(8).max(32),
   shellPath: z.string().max(4096).nullable(),
+  localTerminal: z.enum(['auto', 'native', 'wsl']),
+  wslDistro: z.string().min(1).max(128).nullable(),
   confirmDelete: z.boolean()
 })
 

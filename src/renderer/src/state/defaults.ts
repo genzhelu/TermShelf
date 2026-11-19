@@ -8,6 +8,8 @@ export const DEFAULT_SETTINGS: Settings = {
   showHiddenFiles: false,
   fontSize: 13,
   shellPath: null,
+  localTerminal: 'auto',
+  wslDistro: null,
   confirmDelete: true
 }
 

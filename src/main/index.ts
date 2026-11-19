@@ -8,11 +8,13 @@ import { createConfigStore } from './store/config-store'
 import { SessionManager } from './sessions/manager'
 import { TransferEngine } from './transfers/engine'
 import { registerIpcHandlers } from './ipc'
+import { WslService } from './wsl/service'
 
 let mainWindow: BrowserWindow | null = null
 let logger: Logger
 let store: Awaited<ReturnType<typeof createConfigStore>> | null = null
 let sessions: SessionManager | null = null
+let wslService: WslService | null = null
 let transfers: TransferEngine | null = null
 let boundsTimer: NodeJS.Timeout | null = null
 
@@ -205,7 +207,8 @@ async function bootstrap(): Promise<void> {
     }
   })
 
-  sessions = new SessionManager(store, emitEvent, runtimeRoot)
+  wslService = new WslService()
+  sessions = new SessionManager(store, emitEvent, runtimeRoot, wslService)
   transfers = new TransferEngine({
     getBackend: (sessionId) => sessions!.getBackend(sessionId),
     emit: emitEvent
@@ -226,6 +229,7 @@ async function bootstrap(): Promise<void> {
     transfers,
     store,
     logger,
+    wsl: wslService,
     emit: emitEvent
   })
 

@@ -31,6 +31,7 @@ import type { SessionManager } from './sessions/manager'
 import type { ConfigStore } from './store/types'
 import type { TransferEngine } from './transfers/engine'
 import type { Logger } from './util/logger'
+import type { WslService } from './wsl/service'
 
 export interface IpcContext {
   getWindow: () => BrowserWindow | null
@@ -38,6 +39,7 @@ export interface IpcContext {
   transfers: TransferEngine
   store: ConfigStore
   logger: Logger
+  wsl: WslService
   emit: (event: AppEvent) => void
 }
 
@@ -266,6 +268,8 @@ export function registerIpcHandlers(context: IpcContext): void {
     clipboard.writeText(payload.text)
     return null
   })
+
+  handle(IPC.wslInfo, null, async () => context.wsl.info(true))
 
   ipcMain.on(IPC.sessionWrite, (event, raw: unknown) => {
     if (!isTrusted(event)) return

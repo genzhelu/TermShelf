@@ -101,6 +101,24 @@ function global:prompt {
 __termshelf_emit_osc7
 `
 
+/** POSIX init scripts reused by native Linux/macOS and WSL sessions. */
+export function posixBashInit(): string {
+  return BASH_INIT
+}
+
+export function posixFishInit(): string {
+  return FISH_INIT
+}
+
+export function posixZshInits(): Record<'.zshenv' | '.zprofile' | '.zshrc' | '.zlogin', string> {
+  return {
+    '.zshenv': zshEnvInit(),
+    '.zprofile': ZSH_PROFILE,
+    '.zshrc': ZSH_RC,
+    '.zlogin': ZSH_LOGIN
+  }
+}
+
 export async function prepareLocalShellLaunch(
   options: PrepareLocalShellOptions
 ): Promise<LocalShellLaunch> {

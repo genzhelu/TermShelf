@@ -203,6 +203,52 @@ not shipped in the app.
 
 ---
 
+## 5b. WSL default terminal (Windows-only behavior)
+
+On Windows, TermShelf can open a **WSL distribution as the local terminal** instead of
+PowerShell. This is a runtime feature of the Windows build only; nothing extra is packaged.
+Implementation pointers:
+
+- `src/main/wsl/service.ts` — detects `wsl.exe` (`PATH`, then `C:\Windows\System32\wsl.exe`),
+  tolerates UTF-16LE output from `wsl.exe`, parses `wsl -l -q` / `wsl -l -v`, and probes the
+  selected distro with `wsl.exe [-d <distro>] -e sh -c …` to get its name, `$HOME`, `$SHELL`
+  and (`wslpath -w /`) the Windows UNC root. UNC candidates are `\wsl.localhost\<distro>`
+  first, then `\wsl$\<distro>`; if none is reachable the tab falls back to a terminal-only
+  WSL session (no file sidebar). The service caches detection for 30 s.
+- `src/main/wsl/launch.ts` — prepares the interactive launch. Shell-integration scripts are
+  written _into the distro's_ `/tmp/termshelf-<session>/` directory **through the UNC mount**
+  (so the same bash/zsh/fish OSC 7 hooks as native POSIX shells apply), verified with
+  `wsl.exe … test -r <linux path>`, then launched as
+  `wsl.exe -d <distro> --cd <linux-home> -e <shell> …`. `--cd` matters: it starts the shell in
+  the Linux home instead of inheriting the Windows working directory. When the UNC root, shell
+  or script write is unusable, the launch degrades to a plain
+  `wsl.exe -d <distro> --cd <linux-home>` shell (terminal works, sidebar follow disabled).
+  The generated `/tmp/termshelf-*` directory is removed when the tab closes.
+- `src/main/files/wsl-backend.ts` — the `FileBackend` for WSL tabs: the renderer sees POSIX
+  paths (`/home/<user>`), while reads/writes/listing go through the UNC path. A `null` UNC root
+  produces a terminal-only session whose file operations fail with `WSL_FS_UNAVAILABLE`.
+- `src/main/sessions/manager.ts` — picks WSL vs native from
+  `settings.localTerminal` (`auto`/`native`/`wsl`) and `settings.wslDistro`, honours
+  per-request overrides, and falls back to the native shell (with a warning toast) when WSL
+  cannot start.
+
+### What can and cannot be tested in CI
+
+- `tests/unit/wsl-service.test.ts`, `wsl-backend.test.ts` and `wsl-launch.test.ts` are
+  **hermetic**: they inject `WslService({ platform: 'win32', executablePath: 'C:\\fake\\wsl.exe',
+runner, pathExists })`, a fake test-readable hook and a temp directory standing in for the
+  UNC root. They never spawn `wsl.exe` and run on Linux/macOS/Windows CI.
+- **Real WSL behavior cannot be automated on hosted CI runners** (GitHub's `windows-latest`
+  does not have WSL distributions enabled). End-to-end WSL validation — default WSL tab,
+  `--cd` home, sidebar `/home`, OSC 7 follow, Explorer drag-drop, `ssh -Y` via WSLg, settings
+  switching, WSL-unavailable fallback, UNC-invalid filenames — must be done manually on a
+  Windows 11 + WSL2 machine using `docs/QA.md` §3b.
+- The feature must gracefully degrade: if `wsl.exe` or any distro is missing, `Auto`/`WSL`
+  falls back to the native shell (warning toast) and Settings disables the WSL option. Keep
+  that fallback path working when changing detection code.
+
+---
+
 ## 6. Code signing (optional)
 
 Release builds are intentionally unsigned so any contributor/CI can produce artifacts. The
@@ -269,6 +315,9 @@ Notes:
 - `pnpm test` covers **unit + integration** (`tests/` configured by `vitest.config.ts`). The
   integration suite starts the in-process dev SSH server on ephemeral ports and spawns a pty
   from the prebuilt binary, so it exercises the native module on every OS in the matrix.
+- The WSL feature's unit tests (`tests/unit/wsl-*.test.ts`) are hermetic (fake `wsl.exe` path,
+  fake runner, temp dir as UNC root) and run on every OS. Real WSL cannot be exercised on
+  hosted CI runners — see §5b and the manual WSL checklist in `docs/QA.md` §3b.
 
 ### `.github/workflows/release.yml`
 
@@ -331,18 +380,29 @@ libs, and the AppImage is built on a standard Ubuntu CI runner. `.local-deps` an
 **WSL GUI note:** `pnpm dev` needs WSLg (Windows 11) or an X server. For headless checks use
 `pnpm test`/`pnpm build`; use `xvfb-run` for GUI e2e.
 
+**WSL _feature_ development:** this workstation is itself a WSL guest. The app's WSL-default-
+terminal feature can only be exercised from a **Windows host** running the packaged/`pnpm dev`
+app against WSL; from inside WSL there is no `wsl.exe`. The hermetic `tests/unit/wsl-*.test.ts`
+suite still runs here (and in CI) because it injects the executable path/runner and uses temp
+directories instead of a real UNC mount — use it while iterating on the feature, then validate
+end-to-end on Windows via `docs/QA.md` §3b.
+
 ---
 
 ## 9. Troubleshooting
 
-| Symptom                                               | Likely cause / fix                                                                                                                                          |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm install` warns "Ignored build scripts"          | `allowBuilds` in `pnpm-workspace.yaml` was modified; restore it and reinstall.                                                                              |
-| `Error: Electron failed to install correctly`         | Interrupted `pnpm install`; remove `node_modules/electron` and reinstall (needs network).                                                                   |
-| `libnss3.so` / `libasound.so.2` missing on Linux      | Use the `.local-deps` `LD_LIBRARY_PATH` from §8, or install the distro packages (`libnss3 libasound2t64 libgtk-3-0t64`).                                    |
-| node-pty native error after packaging                 | `asarUnpack` entry removed/broken, or the prebuild for the target arch was not installed at pack time. Reinstall dependencies and rebuild on the target OS. |
-| `pnpm typecheck` fails on a clean checkout            | Make sure you did not edit tsconfigs/config files outside your task; run `pnpm exec tsc -p tsconfig.node.json --noEmit` and read the first error.           |
-| e2e job fails with "Missing X server or $DISPLAY"     | Wrap the runner in `xvfb-run -a` (CI does this).                                                                                                            |
-| Release packaging can't find `build/icon.icns`/`.ico` | Run `pnpm icons` first (the release workflow does).                                                                                                         |
-| `frozen-lockfile` failure in CI                       | Lockfile out of date: `pnpm install`, commit `pnpm-lock.yaml`.                                                                                              |
-| Host key/permission errors with `pnpm dev:sshd`       | Delete `.dev-sshd/host.key` and restart (regenerates); the directory is gitignored and may be read-only in some sandboxes.                                  |
+| Symptom                                               | Likely cause / fix                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install` warns "Ignored build scripts"          | `allowBuilds` in `pnpm-workspace.yaml` was modified; restore it and reinstall.                                                                                                                                                                                                        |
+| `Error: Electron failed to install correctly`         | Interrupted `pnpm install`; remove `node_modules/electron` and reinstall (needs network).                                                                                                                                                                                             |
+| `libnss3.so` / `libasound.so.2` missing on Linux      | Use the `.local-deps` `LD_LIBRARY_PATH` from §8, or install the distro packages (`libnss3 libasound2t64 libgtk-3-0t64`).                                                                                                                                                              |
+| node-pty native error after packaging                 | `asarUnpack` entry removed/broken, or the prebuild for the target arch was not installed at pack time. Reinstall dependencies and rebuild on the target OS.                                                                                                                           |
+| `pnpm typecheck` fails on a clean checkout            | Make sure you did not edit tsconfigs/config files outside your task; run `pnpm exec tsc -p tsconfig.node.json --noEmit` and read the first error.                                                                                                                                     |
+| e2e job fails with "Missing X server or $DISPLAY"     | Wrap the runner in `xvfb-run -a` (CI does this).                                                                                                                                                                                                                                      |
+| Release packaging can't find `build/icon.icns`/`.ico` | Run `pnpm icons` first (the release workflow does).                                                                                                                                                                                                                                   |
+| `frozen-lockfile` failure in CI                       | Lockfile out of date: `pnpm install`, commit `pnpm-lock.yaml`.                                                                                                                                                                                                                        |
+| Host key/permission errors with `pnpm dev:sshd`       | Delete `.dev-sshd/host.key` and restart (regenerates); the directory is gitignored and may be read-only in some sandboxes.                                                                                                                                                            |
+| New Windows terminal opens PowerShell, not WSL        | `Auto` only uses WSL when `wsl.exe` was found and WSL reports a distro; check `wsl -l -v`, or set Settings → Local terminal = WSL. A native `shellPath` in Settings makes `Auto` prefer native.                                                                                       |
+| WSL tab opens but the sidebar is empty/errors         | The UNC mount (`\\wsl.localhost\<distro>` / `\\wsl$\<distro>`) was not reachable (distro stopped, network-drive policy, old Windows build). Clicking refresh or restarting the distro usually re-probes it; otherwise the tab degrades to terminal-only (`WSL_FS_UNAVAILABLE` toast). |
+| WSL files with `:` `*` etc. missing from the sidebar  | Windows-invalid filenames cannot be addressed through the UNC mount — expected limitation; the terminal can still see them. See `docs/QA.md` §3b.11.                                                                                                                                  |
+| WSL detection slow on first tab                       | `wsl.exe` cold start can take seconds; detection is cached for 30 s. Subsequent tabs are fast (see `WslService` cache).                                                                                                                                                               |

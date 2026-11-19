@@ -118,7 +118,13 @@ export const createTransferSlice: SliceCreator<TransferSlice> = (set, get) => ({
         void get().refreshFiles(job.sessionId, { silent: true })
       } else {
         for (const tab of get().tabs) {
-          if (tab.kind === 'local' && get().fileViews[tab.id]?.path) {
+          // Downloads land on the Windows/macOS filesystem; WSL views use a
+          // different path space and must not be refreshed with a local path.
+          if (
+            tab.kind === 'local' &&
+            tab.environment === 'native' &&
+            get().fileViews[tab.id]?.path
+          ) {
             void get().refreshFiles(tab.id, { silent: true })
           }
         }
