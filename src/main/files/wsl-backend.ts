@@ -52,6 +52,8 @@ export class WslBackend implements FileBackend {
   readonly pathStyle: PathStyle = POSIX
   readonly isLocal = false
 
+  private resolvedRootPromise: Promise<string | null> | null = null
+
   constructor(
     private readonly rootPath: string | null,
     private readonly homePath: string
@@ -157,14 +159,32 @@ export class WslBackend implements FileBackend {
     }
   }
 
+  private canonicalRoot(): Promise<string | null> {
+    if (!this.resolvedRootPromise) {
+      this.resolvedRootPromise = fs.promises.realpath(this.assertRoot()).catch(() => null)
+    }
+    return this.resolvedRootPromise
+  }
+
   async realpath(rawPath: string): Promise<string> {
     const { linuxPath, nativePath } = this.checked(rawPath)
+    let resolved: string
     try {
-      const resolved = await fs.promises.realpath(nativePath)
-      return nativeToLinux(this.assertRoot(), resolved) ?? linuxPath
+      resolved = await fs.promises.realpath(nativePath)
     } catch {
       throw new AppError('FS_NOT_FOUND', `No such file or folder: ${linuxPath}`)
     }
+    // macOS exposes temp dirs through /var -> /private/var, and UNC roots can
+    // resolve to an extended spelling. Try the raw root first and then its
+    // canonical form so a symlinked mount root still maps to Linux paths.
+    const direct = nativeToLinux(this.assertRoot(), resolved)
+    if (direct !== null) return direct
+    const canonical = await this.canonicalRoot()
+    if (canonical) {
+      const mapped = nativeToLinux(canonical, resolved)
+      if (mapped !== null) return mapped
+    }
+    return linuxPath
   }
 
   async mkdir(parentPath: string, name: string): Promise<string> {

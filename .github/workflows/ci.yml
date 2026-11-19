@@ -148,9 +148,19 @@ jobs:
               tail -n 150 vitest-output.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            tail -n 40 vitest-output.log | while IFS= read -r line; do
-              clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
-              echo "::error title=Vitest::$clean"
-            done
+            # Surface the actual failing assertions, not just the last lines.
+            grep -E 'FAIL|AssertionError|Error:|expected|Unhandled|failed|✗|×' vitest-output.log \
+              | tail -n 60 > vitest-failures.log || true
+            if [ -s vitest-failures.log ]; then
+              while IFS= read -r line; do
+                clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+                echo "::error title=Vitest::$clean"
+              done < vitest-failures.log
+            else
+              tail -n 40 vitest-output.log | while IFS= read -r line; do
+                clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+                echo "::error title=Vitest::$clean"
+              done
+            fi
           fi
           exit "$status"
