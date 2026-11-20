@@ -106,11 +106,10 @@ def watch_stdin():
         pass
     os._exit(0)
 
-threading.Thread(target=watch_stdin, daemon=True).start()
-while True:
-    client, _ = srv.accept()
-    buf = b''
+def handle(client):
     try:
+        client.settimeout(5)
+        buf = b''
         while len(buf) < len(token):
             chunk = client.recv(65536)
             if not chunk:
@@ -118,10 +117,11 @@ while True:
             buf += chunk
         if not buf.startswith(token):
             client.close()
-            continue
+            return
         remainder = buf[len(token):]
         upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         upstream.connect(path)
+        client.settimeout(None)
         if remainder:
             upstream.sendall(remainder)
     except OSError:
@@ -129,9 +129,14 @@ while True:
             client.close()
         except OSError:
             pass
-        continue
+        return
     threading.Thread(target=pump, args=(client, upstream), daemon=True).start()
     threading.Thread(target=pump, args=(upstream, client), daemon=True).start()
+
+threading.Thread(target=watch_stdin, daemon=True).start()
+while True:
+    client, _ = srv.accept()
+    threading.Thread(target=handle, args=(client,), daemon=True).start()
 `
 
 function runCommandDefault(
