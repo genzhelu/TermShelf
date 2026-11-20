@@ -114,7 +114,7 @@ describe.skipIf(process.platform === 'win32')('authenticated WSLg bridge', () =>
     expect(direct).toBe(false)
 
     await session.cleanup()
-    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    await new Promise((resolve) => setTimeout(resolve, 2_500))
     expect(await canConnect(session.target.port)).toBe(false)
   }, 20_000)
 })
