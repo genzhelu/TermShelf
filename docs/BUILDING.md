@@ -255,12 +255,14 @@ SSH profiles can opt into **Remote GUI**, which requests X11 forwarding from the
 and relays the resulting channels to a local X server:
 
 - `src/main/x11/service.ts` — local display detection, X11 auth probing, and the Windows/WSLg
-  TCP bridge. On Windows, a small Python (or socat) process inside WSL forwards TCP to
-  `/mnt/wslg/.X11-unix/X<n>`; on macOS XQuartz is launched on demand; on Linux/ macOS the
-  current DISPLAY is used. Per-session MIT cookies are generated, and temporary xauth entries
-  are removed on teardown.
-- `src/main/x11/forwarder.ts` — pipes ssh2 `x11` channels to the local display (bounded at 64
-  concurrent clients).
+  authenticated TCP bridge. On Windows, a small Python process inside WSL forwards TCP to
+  `/mnt/wslg/.X11-unix/X<n>`; on macOS XQuartz is launched on demand; on Linux/macOS the
+  current DISPLAY is used. The WSLg bridge requires a per-process preface token and stops when
+  the last X11 tab releases it. A per-session MIT cookie is validated by the relay, which
+  substitutes the local server credential without modifying the user's xauth database.
+- `src/main/x11/forwarder.ts` — authenticates each ssh2 `x11` setup packet and relays it to
+  the local display, substituting local credentials when needed (bounded at 64 concurrent
+  clients).
 - `src/main/sessions/ssh.ts` — prepares the display before opening the shell, passes
   `x11` options to `client.shell`/`client.exec`, and retries the terminal without X11 if the
   remote host rejects forwarding.

@@ -97,14 +97,21 @@ describe('X11 protocol helpers', () => {
   it('parses the WSLg probe and prefers the /mnt/wslg mount', () => {
     expect(
       parseWslgProbe(
-        'DISPLAY=:0\nSOCKET=/tmp/.X11-unix/X0\nSOCKET=/mnt/wslg/.X11-unix/X0\nHELPER=socat\nHELPER=python3\n'
+        'DISPLAY=:0\nSOCKET=/tmp/.X11-unix/X0\nSOCKET=/mnt/wslg/.X11-unix/X0\nHELPER=python3\n'
       )
     ).toEqual({
       display: ':0',
       socket: '/mnt/wslg/.X11-unix/X0',
-      python: true,
-      socat: true
+      python: true
     })
+  })
+
+  it('selects the WSLg socket matching the reported display number', () => {
+    expect(
+      parseWslgProbe(
+        'DISPLAY=:1\nSOCKET=/mnt/wslg/.X11-unix/X0\nSOCKET=/mnt/wslg/.X11-unix/X1\nHELPER=python3\n'
+      ).socket
+    ).toBe('/mnt/wslg/.X11-unix/X1')
   })
 
   it('builds a little-endian X11 setup packet with padded auth fields', () => {
@@ -126,6 +133,27 @@ describe('probeX11Target', () => {
     expect(await probeX11Target({ kind: 'tcp', host: '127.0.0.1', port }, Buffer.alloc(16))).toBe(
       true
     )
+  })
+
+  it('sends the bridge preface before the X11 setup', async () => {
+    const preface = Buffer.from('bridge-secret')
+    let received = Buffer.alloc(0)
+    const port = await startXServer(() => undefined)
+    // Replace the default handler behavior with a preface-aware server.
+    const server = servers.pop()!
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    const prefaceServer = net.createServer((socket) => {
+      socket.on('data', (chunk) => {
+        received = Buffer.concat([received, chunk])
+        if (received.length >= 24) socket.end(Buffer.from([1, 0, 11, 0]))
+      })
+    })
+    servers.push(prefaceServer)
+    await new Promise<void>((resolve) => prefaceServer.listen(port, '127.0.0.1', () => resolve()))
+    expect(
+      await probeX11Target({ kind: 'tcp', host: '127.0.0.1', port, preface }, Buffer.alloc(16))
+    ).toBe(true)
+    expect(received.subarray(0, preface.length).equals(preface)).toBe(true)
   })
 
   it('rejects an authentication failure or closed connection', async () => {
@@ -157,7 +185,7 @@ describe('X11Service detection', () => {
     const service = new X11Service({ platform: 'win32', wsl })
     const info = await service.info(true)
     expect(info.available).toBe(false)
-    expect(info.detail).toContain('python3 or socat')
+    expect(info.detail).toContain('python3')
   })
 
   it('reports a local Linux display and no display when DISPLAY is missing', async () => {
@@ -182,7 +210,7 @@ describe('X11Service detection', () => {
 })
 
 describe('X11Service prepareSession', () => {
-  it('uses a temporary xauth cookie when the local server rejects a random one', async () => {
+  it('substitutes the local xauth cookie instead of modifying the authority file', async () => {
     const display = ':9999'
     const tcpPort = 6000 + 9999
     process.env.DISPLAY = display
@@ -203,14 +231,21 @@ describe('X11Service prepareSession', () => {
       pathExists: () => false,
       runCommand: async (file, args) => {
         commands.push([file, ...args])
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdout: 'host/unix:9999 MIT-MAGIC-COOKIE-1 00112233445566778899aabbccddeeff\n',
+            stderr: ''
+          }
+        }
         return { code: 0, stdout: '', stderr: '' }
       },
       infoTtlMs: 0
     })
     const session = await service.prepareSession()
     expect(session.target).toEqual({ kind: 'tcp', host: '127.0.0.1', port: tcpPort })
-    expect(commands.some((args) => args.includes('add'))).toBe(true)
+    expect(session.localCookie?.toString('hex')).toBe('00112233445566778899aabbccddeeff')
+    expect(commands.map((args) => args[1])).toEqual(['list'])
     await session.cleanup()
-    expect(commands.some((args) => args.includes('remove'))).toBe(true)
   })
 })

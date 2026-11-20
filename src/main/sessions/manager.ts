@@ -13,7 +13,7 @@ import type { Session, SessionEventSink } from './types'
 
 export class SessionManager {
   private readonly sessions = new Map<string, Session>()
-  private readonly pendingSessions = new Set<LocalSession>()
+  private readonly pendingSessions = new Set<Session>()
   private shuttingDown = false
   private wslFallbackNotified = false
 
@@ -142,6 +142,7 @@ export class SessionManager {
   }
 
   async createSsh(request: SshConnectRequest): Promise<SessionDescriptor> {
+    if (this.shuttingDown) throw new AppError('INVALID_ARGUMENT', 'Application is shutting down')
     const id = crypto.randomUUID()
     const session = new SshSession({
       id,
@@ -150,9 +151,21 @@ export class SessionManager {
       emit: this.emitEvent,
       x11: this.x11
     })
-    const descriptor = await session.start()
-    this.sessions.set(id, session)
-    return descriptor
+    this.pendingSessions.add(session)
+    try {
+      const descriptor = await session.start()
+      if (this.shuttingDown) {
+        await session.dispose()
+        throw new AppError('INVALID_ARGUMENT', 'Application is shutting down')
+      }
+      this.sessions.set(id, session)
+      return descriptor
+    } catch (error) {
+      await session.dispose().catch(() => undefined)
+      throw error
+    } finally {
+      this.pendingSessions.delete(session)
+    }
   }
 
   getBackend(sessionId: string): FileBackend {
@@ -184,11 +197,11 @@ export class SessionManager {
 
   async disposeAll(): Promise<void> {
     this.shuttingDown = true
-    const sessions: Session[] = [...this.sessions.values(), ...this.pendingSessions]
+    const sessions = new Set<Session>([...this.sessions.values(), ...this.pendingSessions])
     this.sessions.clear()
     this.pendingSessions.clear()
     await Promise.all(
-      sessions.map(async (session) => {
+      [...sessions].map(async (session) => {
         try {
           await session.dispose()
         } catch {

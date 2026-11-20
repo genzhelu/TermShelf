@@ -306,6 +306,9 @@ export class SshSession implements Session {
   private readonly title: string
   private x11Session: X11Session | null = null
   private x11Forwarder: X11Forwarder | null = null
+  private x11Label: string | null = null
+  private x11Notified = false
+  private lastExecError: string | null = null
 
   private client: Client | null = null
   private channel: ClientChannel | null = null
@@ -447,9 +450,13 @@ export class SshSession implements Session {
     const profileId = await this.persistProfile()
     const credentials = await this.resolveCredentials(profileId)
     await this.openConnection(credentials)
+    this.assertActive()
     await this.attachBackend()
+    this.assertActive()
     await this.prepareX11Forwarding()
+    this.assertActive()
     await this.startShell()
+    this.assertActive()
   }
 
   /** Saves the profile (without ever writing plaintext secrets) before connecting. */
@@ -879,10 +886,26 @@ export class SshSession implements Session {
     if (!client) return
     try {
       const session = await this.x11.prepareSession()
+      // A dispose/reconnect may have completed while the local bridge or
+      // XQuartz was starting. Never install a display on a stale client.
+      if (this.disposed || this.client !== client) {
+        await session.cleanup()
+        return
+      }
       this.x11Session = session
-      this.x11Forwarder = new X11Forwarder(session.target, (message) =>
-        this.emitToast('warn', message)
-      )
+      this.x11Notified = false
+      const labels: Record<string, string> = {
+        wslg: 'WSLg',
+        xquartz: 'XQuartz',
+        x11: 'local X11'
+      }
+      this.x11Label = labels[session.backend] ?? 'X11'
+      this.x11Forwarder = new X11Forwarder({
+        target: session.target,
+        expectedCookie: session.cookie,
+        localCookie: session.localCookie,
+        warn: (message) => this.emitToast('warn', message)
+      })
       client.on('x11', (_details, accept, reject) => {
         if (!this.x11Forwarder || !this.x11Forwarder.canAccept()) {
           reject()
@@ -890,18 +913,18 @@ export class SshSession implements Session {
         }
         this.x11Forwarder.attach(accept())
       })
-      const labels: Record<string, string> = {
-        wslg: 'WSLg',
-        xquartz: 'XQuartz',
-        x11: 'local X11'
-      }
-      this.emitToast('info', `Remote GUI forwarding enabled (${labels[session.backend] ?? 'X11'})`)
     } catch (error) {
       this.emitToast(
         'warn',
         `Remote GUI unavailable: ${error instanceof Error ? error.message : 'unknown error'}`
       )
     }
+  }
+
+  private announceX11(): void {
+    if (!this.x11Session || this.x11Notified || !this.x11Label) return
+    this.x11Notified = true
+    this.emitToast('info', `Remote GUI forwarding enabled (${this.x11Label})`)
   }
 
   private x11ShellOptions(): X11Options | undefined {
@@ -913,6 +936,8 @@ export class SshSession implements Session {
     const hadSession = this.x11Session !== null
     this.x11Forwarder?.close()
     this.x11Forwarder = null
+    this.x11Label = null
+    this.x11Notified = false
     const session = this.x11Session
     this.x11Session = null
     if (session) {
@@ -929,15 +954,28 @@ export class SshSession implements Session {
     await this.disableX11(undefined, false)
   }
 
+  private assertActive(): void {
+    if (this.disposed) {
+      throw new AppError('SSH_DISCONNECTED', 'Session closed during startup')
+    }
+  }
+
   private async startShell(): Promise<void> {
     const client = this.client
     if (!client) throw new AppError('SSH_CONNECT_FAILED', 'Not connected')
 
     const shellInfo = this.sftp ? await this.detectRemoteShell(client) : null
-    const x11 = this.x11ShellOptions()
+    let x11 = this.x11ShellOptions()
     let channel: ClientChannel | null = null
     if (shellInfo?.integrable) {
       channel = await this.tryIntegratedShell(client, shellInfo, x11)
+      if (!channel && x11) {
+        // Retry with shell integration preserved, rather than dropping to a
+        // plain shell just because the remote rejected the X11 request.
+        await this.disableX11(this.guiFailureMessage(this.lastExecError))
+        x11 = undefined
+        channel = await this.tryIntegratedShell(client, shellInfo)
+      }
     }
     if (!channel) {
       try {
@@ -945,11 +983,12 @@ export class SshSession implements Session {
         this.attachChannel(channel)
       } catch (error) {
         if (!x11) throw error
-        await this.disableX11('Remote host rejected X11 forwarding; terminal opened without a GUI.')
+        await this.disableX11(this.guiFailureMessage(error))
         channel = await this.openPlainShell(client)
         this.attachChannel(channel)
       }
     }
+    this.announceX11()
   }
 
   /** Detects `$SHELL`/kernel name with a short exec channel; never throws. */
@@ -1014,11 +1053,20 @@ export class SshSession implements Session {
     })
   }
 
+  private guiFailureMessage(error: unknown): string {
+    const text = error instanceof Error ? error.message : String(error ?? '')
+    if (/x11|forwarding request|could not request/i.test(text)) {
+      return 'Remote host rejected X11 forwarding; terminal opened without a GUI.'
+    }
+    return 'Remote GUI could not be established; terminal opened without a GUI.'
+  }
+
   private async tryIntegratedShell(
     client: Client,
     info: RemoteShellInfo,
     x11?: X11Options
   ): Promise<ClientChannel | null> {
+    this.lastExecError = null
     const plan = await this.prepareIntegration(info)
     if (!plan) return null
 
@@ -1079,9 +1127,11 @@ export class SshSession implements Session {
       }
       try {
         client.exec(command, options, (error, channel) => {
+          this.lastExecError = error?.message ?? null
           resolve(error || !channel ? null : channel)
         })
-      } catch {
+      } catch (error) {
+        this.lastExecError = error instanceof Error ? error.message : 'X11 request failed'
         resolve(null)
       }
     })
