@@ -31,8 +31,10 @@ async function startXServer(
       let buffer = Buffer.alloc(0)
       socket.on('data', (chunk) => {
         buffer = Buffer.concat([buffer, chunk])
-        if (buffer.length < setupLength(buffer)) return
-        onSetup(buffer.subarray(0, setupLength(buffer)), socket)
+        if (buffer.length < 12) return
+        const length = setupLength(buffer)
+        if (buffer.length < length) return
+        onSetup(buffer.subarray(0, length), socket)
       })
       socket.on('error', () => undefined)
     })
