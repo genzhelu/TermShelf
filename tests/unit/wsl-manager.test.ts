@@ -53,7 +53,14 @@ describe.skipIf(process.platform === 'win32')('SessionManager WSL fallback', () 
       shellPath: null
     } as Settings
     const store = { getSettings: () => settings } as unknown as ConfigStore
-    const manager = new SessionManager(store, () => undefined, tempDir(), fakeWslService, 'win32')
+    const manager = new SessionManager(
+      store,
+      () => undefined,
+      tempDir(),
+      fakeWslService,
+      {} as never,
+      'win32'
+    )
 
     const starting = manager.createLocal({ cols: 80, rows: 20, terminal: 'wsl' })
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -101,6 +108,7 @@ describe.skipIf(process.platform === 'win32')('SessionManager WSL fallback', () 
       (event) => events.push(event),
       tempDir(),
       fakeWslService,
+      {} as never,
       'win32'
     )
 

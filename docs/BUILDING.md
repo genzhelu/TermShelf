@@ -249,6 +249,29 @@ runner, pathExists })`, a fake test-readable hook and a temp directory standing 
 
 ---
 
+## 5c. Remote GUI / X11 forwarding
+
+SSH profiles can opt into **Remote GUI**, which requests X11 forwarding from the remote sshd
+and relays the resulting channels to a local X server:
+
+- `src/main/x11/service.ts` — local display detection, X11 auth probing, and the Windows/WSLg
+  TCP bridge. On Windows, a small Python (or socat) process inside WSL forwards TCP to
+  `/mnt/wslg/.X11-unix/X<n>`; on macOS XQuartz is launched on demand; on Linux/ macOS the
+  current DISPLAY is used. Per-session MIT cookies are generated, and temporary xauth entries
+  are removed on teardown.
+- `src/main/x11/forwarder.ts` — pipes ssh2 `x11` channels to the local display (bounded at 64
+  concurrent clients).
+- `src/main/sessions/ssh.ts` — prepares the display before opening the shell, passes
+  `x11` options to `client.shell`/`client.exec`, and retries the terminal without X11 if the
+  remote host rejects forwarding.
+
+Real WSLg/XQuartz/remote-host X11 cannot be exercised on hosted CI runners. The unit tests are
+hermetic (`tests/unit/x11-service.test.ts`, `tests/unit/x11-forwarder.test.ts`); remote GUI
+acceptance must be done manually per `docs/QA.md` §6b. The fallback test uses the in-process
+dev SSH server, which intentionally rejects X11 requests.
+
+---
+
 ## 6. Code signing (optional)
 
 Release builds are intentionally unsigned so any contributor/CI can produce artifacts. The

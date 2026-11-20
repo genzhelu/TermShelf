@@ -5,9 +5,11 @@ import { Client, utils as ssh2Utils } from 'ssh2'
 import type {
   ClientChannel,
   ConnectConfig,
+  ExecOptions,
   KeyboardInteractiveCallback,
   Prompt,
-  SFTPWrapper
+  SFTPWrapper,
+  X11Options
 } from 'ssh2'
 import type {
   AppErrorPayload,
@@ -29,6 +31,8 @@ import type { ConfigStore, StoredSecret } from '../store/types'
 import { DataBatcher } from '../util/batcher'
 import { mapSftpError, mapSshClientError } from '../util/ssh-errors'
 import { joinPath } from '../util/paths'
+import { X11Forwarder } from '../x11/forwarder'
+import type { X11Service, X11Session } from '../x11/service'
 import type { Session, SessionEventSink } from './types'
 
 const TERM = 'xterm-256color'
@@ -280,6 +284,7 @@ export interface SshSessionOptions {
   request: SshConnectRequest
   store: ConfigStore
   emit: SessionEventSink
+  x11: X11Service
 }
 
 /**
@@ -297,7 +302,10 @@ export class SshSession implements Session {
   private readonly request: SshConnectRequest
   private readonly store: ConfigStore
   private readonly emitSink: SessionEventSink
+  private readonly x11: X11Service
   private readonly title: string
+  private x11Session: X11Session | null = null
+  private x11Forwarder: X11Forwarder | null = null
 
   private client: Client | null = null
   private channel: ClientChannel | null = null
@@ -332,6 +340,7 @@ export class SshSession implements Session {
     this.request = options.request
     this.store = options.store
     this.emitSink = options.emit
+    this.x11 = options.x11
     this.cols = Math.max(2, Math.trunc(options.request.cols) || 80)
     this.rows = Math.max(2, Math.trunc(options.request.rows) || 24)
     const profileName = options.request.profile.name?.trim()
@@ -439,6 +448,7 @@ export class SshSession implements Session {
     const credentials = await this.resolveCredentials(profileId)
     await this.openConnection(credentials)
     await this.attachBackend()
+    await this.prepareX11Forwarding()
     await this.startShell()
   }
 
@@ -755,6 +765,7 @@ export class SshSession implements Session {
 
   private handleClientClose(): void {
     if (this.disposed) return
+    void this.closeX11Forwarding()
     this.releaseDecoders()
     this.channel = null
     if (this.status === 'connected' || this.status === 'ended') {
@@ -861,18 +872,83 @@ export class SshSession implements Session {
   /* Remote shell                                                             */
   /* ------------------------------------------------------------------------ */
 
+  /** Prepares a local X11 display and attaches the ssh2 X11 channel handler. */
+  private async prepareX11Forwarding(): Promise<void> {
+    if (this.request.profile.x11 !== true) return
+    const client = this.client
+    if (!client) return
+    try {
+      const session = await this.x11.prepareSession()
+      this.x11Session = session
+      this.x11Forwarder = new X11Forwarder(session.target, (message) =>
+        this.emitToast('warn', message)
+      )
+      client.on('x11', (_details, accept, reject) => {
+        if (!this.x11Forwarder || !this.x11Forwarder.canAccept()) {
+          reject()
+          return
+        }
+        this.x11Forwarder.attach(accept())
+      })
+      const labels: Record<string, string> = {
+        wslg: 'WSLg',
+        xquartz: 'XQuartz',
+        x11: 'local X11'
+      }
+      this.emitToast('info', `Remote GUI forwarding enabled (${labels[session.backend] ?? 'X11'})`)
+    } catch (error) {
+      this.emitToast(
+        'warn',
+        `Remote GUI unavailable: ${error instanceof Error ? error.message : 'unknown error'}`
+      )
+    }
+  }
+
+  private x11ShellOptions(): X11Options | undefined {
+    if (!this.x11Session) return undefined
+    return { cookie: this.x11Session.cookie, single: false, screen: 0 }
+  }
+
+  private async disableX11(message?: string, warn = true): Promise<void> {
+    const hadSession = this.x11Session !== null
+    this.x11Forwarder?.close()
+    this.x11Forwarder = null
+    const session = this.x11Session
+    this.x11Session = null
+    if (session) {
+      try {
+        await session.cleanup()
+      } catch {
+        // best effort
+      }
+    }
+    if (hadSession && warn && message) this.emitToast('warn', message)
+  }
+
+  private async closeX11Forwarding(): Promise<void> {
+    await this.disableX11(undefined, false)
+  }
+
   private async startShell(): Promise<void> {
     const client = this.client
     if (!client) throw new AppError('SSH_CONNECT_FAILED', 'Not connected')
 
     const shellInfo = this.sftp ? await this.detectRemoteShell(client) : null
+    const x11 = this.x11ShellOptions()
     let channel: ClientChannel | null = null
     if (shellInfo?.integrable) {
-      channel = await this.tryIntegratedShell(client, shellInfo)
+      channel = await this.tryIntegratedShell(client, shellInfo, x11)
     }
     if (!channel) {
-      channel = await this.openPlainShell(client)
-      this.attachChannel(channel)
+      try {
+        channel = await this.openPlainShell(client, x11)
+        this.attachChannel(channel)
+      } catch (error) {
+        if (!x11) throw error
+        await this.disableX11('Remote host rejected X11 forwarding; terminal opened without a GUI.')
+        channel = await this.openPlainShell(client)
+        this.attachChannel(channel)
+      }
     }
   }
 
@@ -940,12 +1016,13 @@ export class SshSession implements Session {
 
   private async tryIntegratedShell(
     client: Client,
-    info: RemoteShellInfo
+    info: RemoteShellInfo,
+    x11?: X11Options
   ): Promise<ClientChannel | null> {
     const plan = await this.prepareIntegration(info)
     if (!plan) return null
 
-    const channel = await this.openExecShell(client, plan.command)
+    const channel = await this.openExecShell(client, plan.command, x11)
     if (!channel) {
       await this.cleanupIntegrationFiles()
       return null
@@ -990,37 +1067,44 @@ export class SshSession implements Session {
     return channel
   }
 
-  private openExecShell(client: Client, command: string): Promise<ClientChannel | null> {
+  private openExecShell(
+    client: Client,
+    command: string,
+    x11?: X11Options
+  ): Promise<ClientChannel | null> {
     return new Promise<ClientChannel | null>((resolve) => {
+      const options: ExecOptions = {
+        pty: { term: TERM, cols: this.cols, rows: this.rows },
+        ...(x11 ? { x11 } : {})
+      }
       try {
-        client.exec(
-          command,
-          { pty: { term: TERM, cols: this.cols, rows: this.rows } },
-          (error, channel) => {
-            resolve(error || !channel ? null : channel)
-          }
-        )
+        client.exec(command, options, (error, channel) => {
+          resolve(error || !channel ? null : channel)
+        })
       } catch {
         resolve(null)
       }
     })
   }
 
-  private openPlainShell(client: Client): Promise<ClientChannel> {
+  private openPlainShell(client: Client, x11?: X11Options): Promise<ClientChannel> {
     return new Promise<ClientChannel>((resolve, reject) => {
-      try {
-        client.shell({ term: TERM, cols: this.cols, rows: this.rows }, (error, channel) => {
-          if (error || !channel) {
-            reject(
-              new AppError(
-                'SHELL_SPAWN_FAILED',
-                `Could not open a remote shell: ${(error as Error)?.message ?? 'unknown error'}`
-              )
+      const window = { term: TERM, cols: this.cols, rows: this.rows }
+      const onChannel = (error?: Error, channel?: ClientChannel): void => {
+        if (error || !channel) {
+          reject(
+            new AppError(
+              'SHELL_SPAWN_FAILED',
+              `Could not open a remote shell: ${error?.message ?? 'unknown error'}`
             )
-            return
-          }
-          resolve(channel)
-        })
+          )
+          return
+        }
+        resolve(channel)
+      }
+      try {
+        if (x11) client.shell(window, { x11 }, onChannel)
+        else client.shell(window, onChannel)
       } catch (error) {
         reject(
           new AppError(
@@ -1232,6 +1316,7 @@ export class SshSession implements Session {
 
   private async teardownConnection(): Promise<void> {
     this.probing = false
+    await this.closeX11Forwarding()
     this.releaseDecoders()
     try {
       await this.cleanupIntegrationFiles()

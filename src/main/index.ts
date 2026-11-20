@@ -9,12 +9,14 @@ import { SessionManager } from './sessions/manager'
 import { TransferEngine } from './transfers/engine'
 import { registerIpcHandlers } from './ipc'
 import { WslService } from './wsl/service'
+import { X11Service } from './x11/service'
 
 let mainWindow: BrowserWindow | null = null
 let logger: Logger
 let store: Awaited<ReturnType<typeof createConfigStore>> | null = null
 let sessions: SessionManager | null = null
 let wslService: WslService | null = null
+let x11Service: X11Service | null = null
 let transfers: TransferEngine | null = null
 let boundsTimer: NodeJS.Timeout | null = null
 
@@ -208,7 +210,11 @@ async function bootstrap(): Promise<void> {
   })
 
   wslService = new WslService()
-  sessions = new SessionManager(store, emitEvent, runtimeRoot, wslService)
+  x11Service = new X11Service({
+    wsl: wslService,
+    getWslDistro: () => store?.getSettings().wslDistro ?? null
+  })
+  sessions = new SessionManager(store, emitEvent, runtimeRoot, wslService, x11Service)
   transfers = new TransferEngine({
     getBackend: (sessionId) => sessions!.getBackend(sessionId),
     emit: emitEvent
@@ -230,6 +236,7 @@ async function bootstrap(): Promise<void> {
     store,
     logger,
     wsl: wslService,
+    x11: x11Service,
     emit: emitEvent
   })
 
@@ -276,6 +283,7 @@ if (!gotLock) {
       try {
         await store?.flush()
         await sessions?.disposeAll()
+        await x11Service?.dispose()
       } catch (error) {
         logger?.error('Shutdown cleanup failed', error)
       } finally {

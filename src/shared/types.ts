@@ -11,6 +11,16 @@ export type SessionEnvironment = 'native' | 'wsl' | 'ssh'
 /** Which local terminal implementation new tabs should use. */
 export type LocalTerminalMode = 'auto' | 'native' | 'wsl'
 
+/** Where a local X11 display is available, or none. */
+export type X11Backend = 'wslg' | 'xquartz' | 'x11' | 'none'
+
+export interface X11Info {
+  available: boolean
+  backend: X11Backend
+  label: string
+  detail?: string
+}
+
 export interface WslInfo {
   available: boolean
   distros: string[]
@@ -49,6 +59,7 @@ export type AppErrorCode =
   | 'WSL_UNAVAILABLE'
   | 'WSL_DISTRO_NOT_FOUND'
   | 'WSL_FS_UNAVAILABLE'
+  | 'X11_UNAVAILABLE'
   | 'SHELL_SPAWN_FAILED'
   | 'FS_NOT_FOUND'
   | 'FS_PERMISSION_DENIED'
@@ -125,6 +136,8 @@ export interface SshProfile {
   privateKeyPath?: string
   saveProfile: boolean
   saveSecret: boolean
+  /** Request X11 forwarding so remote GUI applications can display locally. */
+  x11?: boolean
 }
 
 export interface SshConnectRequest {
@@ -143,6 +156,7 @@ export interface SshProfileSummary {
   username: string
   authMethod: AuthMethod
   privateKeyPath?: string
+  x11: boolean
   hasSavedPassword: boolean
   hasSavedPassphrase: boolean
   lastUsedAt?: string

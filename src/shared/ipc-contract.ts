@@ -19,7 +19,8 @@ import type {
   TransferJob,
   TransferRequest,
   TransferStartResult,
-  WslInfo
+  WslInfo,
+  X11Info
 } from './types'
 
 export const IPC = {
@@ -52,6 +53,7 @@ export const IPC = {
   clipboardRead: 'clipboard:read-text',
   clipboardWrite: 'clipboard:write-text',
   wslInfo: 'wsl:info',
+  x11Info: 'x11:info',
   event: 'app:event'
 } as const
 
@@ -109,5 +111,8 @@ export interface TermshelfApi {
   }
   wsl: {
     info(): Promise<IpcResult<WslInfo>>
+  }
+  x11: {
+    info(): Promise<IpcResult<X11Info>>
   }
 }

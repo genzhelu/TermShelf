@@ -1,6 +1,12 @@
 import type { FormEvent } from 'react'
-import { useRef, useState } from 'react'
-import type { AuthMethod, SshConnectRequest, SshProfile, SshProfileSummary } from '@shared/types'
+import { useEffect, useRef, useState } from 'react'
+import type {
+  AuthMethod,
+  SshConnectRequest,
+  SshProfile,
+  SshProfileSummary,
+  X11Info
+} from '@shared/types'
 import { errorMessage, getApi, safeCall } from '../../lib/api'
 import { hostKeyPromptFromError, type HostKeyPrompt } from '../../lib/hostKey'
 import { useAppStore } from '../../state/appStore'
@@ -20,6 +26,7 @@ interface SshFormState {
   passphrase: string
   saveProfile: boolean
   saveSecret: boolean
+  x11: boolean
 }
 
 const AUTH_METHODS: Array<{ value: AuthMethod; label: string; hint: string }> = [
@@ -43,7 +50,8 @@ function emptyForm(): SshFormState {
     password: '',
     passphrase: '',
     saveProfile: true,
-    saveSecret: false
+    saveSecret: false,
+    x11: false
   }
 }
 
@@ -59,7 +67,8 @@ function formFromProfile(profile: SshProfileSummary | null): SshFormState {
     password: '',
     passphrase: '',
     saveProfile: true,
-    saveSecret: profile.hasSavedPassword || profile.hasSavedPassphrase
+    saveSecret: profile.hasSavedPassword || profile.hasSavedPassphrase,
+    x11: profile.x11
   }
 }
 
@@ -83,7 +92,29 @@ export function SshDialog({ seed }: { seed: SshDialogSeed }): React.JSX.Element 
   const [busy, setBusy] = useState(false)
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPrompt | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [x11Info, setX11Info] = useState<X11Info | null>(null)
+  const [x11Loading, setX11Loading] = useState(true)
   const pendingRequestRef = useRef<SshConnectRequest | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setX11Loading(true)
+    void safeCall(() => getApi().x11.info()).then((result) => {
+      if (cancelled) return
+      setX11Loading(false)
+      if (result.ok) setX11Info(result.data)
+      else
+        setX11Info({
+          available: false,
+          backend: 'none',
+          label: 'Local GUI unavailable',
+          detail: errorMessage(result.error)
+        })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const selectedProfile = profiles.find((profile) => profile.id === selectedId) ?? null
 
@@ -123,7 +154,8 @@ export function SshDialog({ seed }: { seed: SshDialogSeed }): React.JSX.Element 
       username,
       authMethod: form.authMethod,
       saveProfile: form.saveProfile,
-      saveSecret: withSavedSecretFlags
+      saveSecret: withSavedSecretFlags,
+      x11: form.x11
     }
     if (selectedProfile?.id) profile.id = selectedProfile.id
     if (form.authMethod === 'privateKey') profile.privateKeyPath = form.privateKeyPath.trim()
@@ -213,7 +245,8 @@ export function SshDialog({ seed }: { seed: SshDialogSeed }): React.JSX.Element 
       username: profile.username,
       authMethod: profile.authMethod,
       saveProfile: true,
-      saveSecret: encryptionAvailable && profileHasSavedSecret(profile)
+      saveSecret: encryptionAvailable && profileHasSavedSecret(profile),
+      x11: profile.x11
     }
     if (profile.privateKeyPath) body.privateKeyPath = profile.privateKeyPath
     setSelectedId(profile.id)
@@ -565,6 +598,24 @@ export function SshDialog({ seed }: { seed: SshDialogSeed }): React.JSX.Element 
           ) : null}
 
           <div className="ssh-form__options">
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={form.x11}
+                onChange={(event) => patchForm({ x11: event.target.checked })}
+                data-testid="ssh-x11-checkbox"
+              />
+              <span>
+                <span className="checkbox__label">Enable remote GUI (X11 forwarding)</span>
+                <span className="checkbox__hint">
+                  {x11Loading
+                    ? 'Checking local GUI availability…'
+                    : x11Info?.available
+                      ? `${x11Info.label}${x11Info.detail ? ` — ${x11Info.detail}` : ''}. Only use this with trusted servers.`
+                      : (x11Info?.detail ?? 'No local GUI display is available.')}
+                </span>
+              </span>
+            </label>
             <label className="checkbox">
               <input
                 type="checkbox"

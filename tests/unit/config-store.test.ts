@@ -180,6 +180,19 @@ describe('ConfigStore profiles and secrets', () => {
     expect((await readConfig()).secrets).toEqual({})
   })
 
+  it('persists the X11 forwarding preference on profiles', async () => {
+    const store = await openStore()
+    const saved = store.saveProfile(makeProfile({ x11: true }))
+    expect(saved.x11).toBe(true)
+    expect(store.listProfiles()[0]?.x11).toBe(true)
+    await store.flush()
+
+    const reloaded = await openStore()
+    expect(reloaded.listProfiles()[0]?.x11).toBe(true)
+    const updated = reloaded.saveProfile(makeProfile({ id: saved.id, x11: false }))
+    expect(updated.x11).toBe(false)
+  })
+
   it('behaves the same when no safeStorage backend is provided', async () => {
     const store = await openStore({ safeStorage: undefined })
     expect(store.encryptionAvailable).toBe(false)

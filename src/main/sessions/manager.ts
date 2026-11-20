@@ -5,6 +5,7 @@ import type { FileBackend } from '../files/types'
 import { WslBackend } from '../files/wsl-backend'
 import type { ConfigStore } from '../store/types'
 import { prepareWslShellLaunch } from '../wsl/launch'
+import type { X11Service } from '../x11/service'
 import type { WslService } from '../wsl/service'
 import { LocalSession } from './local'
 import { SshSession } from './ssh'
@@ -21,6 +22,7 @@ export class SessionManager {
     private readonly emitEvent: SessionEventSink,
     private readonly runtimeRoot: string,
     private readonly wsl: WslService,
+    private readonly x11: X11Service,
     private readonly platform: NodeJS.Platform = process.platform
   ) {}
 
@@ -145,7 +147,8 @@ export class SessionManager {
       id,
       request,
       store: this.store,
-      emit: this.emitEvent
+      emit: this.emitEvent,
+      x11: this.x11
     })
     const descriptor = await session.start()
     this.sessions.set(id, session)

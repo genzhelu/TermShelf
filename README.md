@@ -32,7 +32,9 @@ Windows and macOS builds.
   action reuses it. Remote sessions stream through SFTP.
 - **Real SSH sessions** — profile manager (password, private key + passphrase, or SSH agent),
   explicit host-key trust with SHA-256 fingerprints and mismatch blocking, keepalives,
-  reconnect, saved profiles, and per-session SFTP on the same connection.
+  reconnect, saved profiles, and per-session SFTP on the same connection. Opt-in **Remote GUI
+  (X11 forwarding)** opens Linux GUI applications such as RELION locally while the terminal
+  and SFTP sidebar keep working.
 - **Fast SFTP transfers** — remote uploads/downloads use a 32-way pipelined SFTP path
   (signed-off chunks with progress and cancellation) instead of a single ordered stream,
   which is several times faster over real SSH links.
@@ -76,10 +78,10 @@ pnpm 11 are the only build prerequisites; the native PTY ships as a prebuilt N-A
 no compiler is needed.
 
 ```bash
-# On the Mac (source archive is in dist/termshelf-0.1.6-source.tar.gz,
+# On the Mac (source archive is in dist/termshelf-0.2.0-source.tar.gz,
 # or use the repo checkout)
-tar -xzf termshelf-0.1.6-source.tar.gz
-cd termshelf-0.1.6
+tar -xzf termshelf-0.2.0-source.tar.gz
+cd termshelf-0.2.0
 brew install node@22                      # or nvm install 22
 export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 npm install -g pnpm@11
@@ -95,8 +97,8 @@ pnpm build
 pnpm exec electron-builder --mac --arm64   # or --x64, or omit for both arches
 ```
 
-Outputs land in `dist/` as `TermShelf-0.1.6-mac-arm64.dmg` / `.zip` and
-`TermShelf-0.1.6-mac-x64.dmg` / `.zip`; the unpacked app is under `dist/mac-arm64/` or
+Outputs land in `dist/` as `TermShelf-0.2.0-mac-arm64.dmg` / `.zip` and
+`TermShelf-0.2.0-mac-x64.dmg` / `.zip`; the unpacked app is under `dist/mac-arm64/` or
 `dist/mac/`. Launch a locally built app with `open dist/mac-arm64/TermShelf.app`.
 
 Because builds are **unsigned**, an app downloaded from CI is quarantined by Gatekeeper:
@@ -104,7 +106,7 @@ right-click the app → **Open**, or run
 `xattr -dr com.apple.quarantine /Applications/TermShelf.app`. The first time you browse
 Desktop/Documents/Downloads, macOS may ask you to grant file access; allow it for the sidebar.
 Saved SSH secrets go to the macOS Keychain. Alternatively push the repository to GitHub and
-push a tag (`git tag v0.1.6 && git push origin v0.1.6`): the release workflow builds both Mac
+push a tag (`git tag v0.2.0 && git push origin v0.2.0`): the release workflow builds both Mac
 architectures and publishes a GitHub **Release** with the DMGs, ZIPs and checksums attached,
 so other macOS users can install without a GitHub account.
 
@@ -156,8 +158,8 @@ see [docs/BUILDING.md](docs/BUILDING.md) for signing, notarization and CI detail
 
 Artifacts produced and verified in this checkout:
 
-- `dist/TermShelf-0.1.6-linux-x86_64.AppImage` — built and smoke-tested headlessly.
-- `dist/TermShelf-0.1.6-win-x64.zip` — Windows x64 portable build (PE32+ verified; cannot be
+- `dist/TermShelf-0.2.0-linux-x86_64.AppImage` — built and smoke-tested headlessly.
+- `dist/TermShelf-0.2.0-win-x64.zip` — Windows x64 portable build (PE32+ verified; cannot be
   executed on this Linux host).
 - The macOS `.dmg`/`.zip` must be built on macOS (or the provided CI workflow); macOS
   packaging is not possible on Linux.
@@ -172,6 +174,7 @@ src/main            Electron main process:
   sessions/         LocalSession (node-pty) and SshSession (ssh2 pty + SFTP), session manager
   files/            FileBackend contract: LocalBackend, WslBackend and SftpBackend
   wsl/              WSL detection/context, UNC path mapping, shell launch/integration
+  x11/              local display detection, WSLg bridge, X11 channel forwarding
   transfers/        scan → plan → conflict policy → streams → progress/cancel/cleanup
   shell/            per-shell init scripts for clean OSC 7 CWD reporting
   store/            atomic JSON config: settings, profiles, encrypted secrets, known hosts
@@ -204,20 +207,27 @@ never constructs filesystem paths itself.
   remotes work for the terminal and SFTP; remote-folder sync falls back to manual browsing.
   Shell integration is best-effort: if SFTP, shell detection or init-file verification fails,
   the session falls back to a plain shell and the sidebar remains fully usable manually.
-- **X11/GUI apps (`ssh -Y`)**: run `ssh -Y <host>` inside a local terminal; on Windows the
-  default WSL tab is ideal because WSLg supplies the X server and displays the windows. The
-  app's own SSH sessions do not implement X11 forwarding. Remember that the sidebar in the
-  WSL tab shows WSL files, not files on the remote host; use a separate **New SSH Session**
-  tab for the remote SFTP sidebar and transfers.
+- **Remote GUI (X11 forwarding)** — SSH profiles can enable **Remote GUI** to display remote
+  Linux applications locally. On Windows 11 the app bridges to **WSLg** automatically (WSL
+  needs `python3` or `socat`; no separate X server is required). On macOS, install
+  **[XQuartz](https://www.xquartz.org/)**; TermShelf launches it on demand. On Linux the app
+  uses the current X11 display. The remote host must permit X11 forwarding (`X11Forwarding
+yes` and `xauth`); if it rejects the request, the terminal opens normally with a warning.
+  Enable it per saved profile in the SSH dialog. Example: connect to a RELION host, enable
+  Remote GUI, then run `relion` (or the full path to the RELION executable). X11 is only safe with
+  trusted hosts — a remote application can access your local display while forwarding is
+  enabled. GUI rendering may be slower than local; OpenGL/GLX apps can require software
+  rendering. The remote sidebar remains SFTP, so file browsing is unaffected.
 - **Running `ssh` inside a native local tab does not repoint the sidebar.** Use the app's
   **New SSH Session** flow (server icon, `Ctrl/Cmd+Shift+T`) so it can open SFTP with the
   same credentials and follow the remote shell's folder.
-- **Scope for v1**: no jump hosts/port forwarding/X11, no built-in editor, no upload
+- **Scope for v1**: no jump hosts/port forwarding, no built-in editor, no upload
   resume/retry, no drag-out to the desktop, no session restore on launch, no light theme, and
-  no native X11 forwarding inside app SSH sessions. WSL file browsing uses the Windows UNC
-  mount, so Linux filenames Windows cannot address are unsupported; choosing a specific shell
-  inside the distro is not exposed (the distro's login shell is used). Keyboard-interactive
-  auth is limited to a single non-echo password prompt.
+  no bundled X server on Windows/macOS. Remote GUI uses WSLg/XQuartz/the local display as
+  described above. WSL file browsing uses the Windows UNC mount, so Linux filenames Windows
+  cannot address are unsupported; choosing a specific shell inside the distro is not exposed
+  (the distro's login shell is used). Keyboard-interactive auth is limited to a single
+  non-echo password prompt.
 - Electron bundle size is ~100 MB; terminal rendering uses xterm's DOM renderer for stability
   (WebGL can be added later).
 

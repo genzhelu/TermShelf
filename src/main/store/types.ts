@@ -21,6 +21,7 @@ export interface StoredProfile {
   username: string
   authMethod: 'password' | 'privateKey' | 'agent'
   privateKeyPath?: string
+  x11: boolean
   hasSavedPassword: boolean
   hasSavedPassphrase: boolean
   lastUsedAt?: string

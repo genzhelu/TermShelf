@@ -29,7 +29,8 @@ export const sshProfileSchema = z.object({
   authMethod: z.enum(['password', 'privateKey', 'agent']),
   privateKeyPath: z.string().min(1).max(4096).optional(),
   saveProfile: z.boolean(),
-  saveSecret: z.boolean()
+  saveSecret: z.boolean(),
+  x11: z.boolean().optional()
 })
 
 export const sshConnectRequestSchema = z.object({

@@ -219,6 +219,7 @@ function sanitizeProfile(value: unknown): StoredProfile | null {
     username,
     authMethod: asAuthMethod(value.authMethod, 'password'),
     ...(privateKeyPath ? { privateKeyPath } : {}),
+    x11: asBoolean(value.x11, false),
     hasSavedPassword: asBoolean(value.hasSavedPassword, false),
     hasSavedPassphrase: asBoolean(value.hasSavedPassphrase, false),
     ...(lastUsedAt ? { lastUsedAt } : {})
@@ -494,6 +495,7 @@ export class ConfigStoreImpl implements ConfigStore {
         username: profile.username,
         authMethod: profile.authMethod,
         ...(profile.privateKeyPath ? { privateKeyPath: profile.privateKeyPath } : {}),
+        x11: profile.x11 === true,
         hasSavedPassword: false,
         hasSavedPassphrase: false,
         ...(existing?.lastUsedAt ? { lastUsedAt: existing.lastUsedAt } : {})
@@ -529,6 +531,7 @@ export class ConfigStoreImpl implements ConfigStore {
       username: profile.username,
       authMethod: profile.authMethod,
       ...(profile.privateKeyPath ? { privateKeyPath: profile.privateKeyPath } : {}),
+      x11: profile.x11 === true,
       hasSavedPassword: this.hasSecret(id, 'password'),
       hasSavedPassphrase: this.hasSecret(id, 'passphrase'),
       lastUsedAt: new Date().toISOString()
@@ -651,6 +654,7 @@ export class ConfigStoreImpl implements ConfigStore {
       username: record.username,
       authMethod: record.authMethod,
       ...(record.privateKeyPath ? { privateKeyPath: record.privateKeyPath } : {}),
+      x11: record.x11,
       hasSavedPassword: this.hasSecret(record.id, 'password'),
       hasSavedPassphrase: this.hasSecret(record.id, 'passphrase'),
       ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt } : {})

@@ -1,7 +1,7 @@
 name: Release
 
 # Build distributable installers for all three desktop platforms.
-#   * Push a tag like v0.1.6 to build the artifacts and publish a GitHub Release
+#   * Push a tag like v0.2.0 to build the artifacts and publish a GitHub Release
 #     (macOS users can then download the .dmg directly from the Releases page).
 #   * Or run the workflow manually; artifacts stay on the workflow run.
 # Artifacts are unsigned by default. To sign later, see "Code signing" in
@@ -208,6 +208,10 @@ jobs:
           When WSL is installed, new local terminals default to the WSL distribution
           (Settings → Default local terminal switches to native PowerShell). In that WSL tab,
           `ssh -Y` works through WSLg; use a separate SSH session for the remote SFTP sidebar.
+
+          SSH profiles now have an opt-in **Remote GUI (X11 forwarding)** checkbox: Windows uses
+          WSLg automatically, macOS uses XQuartz. Enable it for RELION or other remote GUI apps.
+          X11 forwarding is only appropriate for trusted hosts.
 
           ### Linux (x64, development)
           `TermShelf-<version>-linux-x86_64.AppImage`, made executable and run.

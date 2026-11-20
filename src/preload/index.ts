@@ -71,6 +71,9 @@ const api: TermshelfApi = {
   },
   wsl: {
     info: () => ipcRenderer.invoke(IPC.wslInfo)
+  },
+  x11: {
+    info: () => ipcRenderer.invoke(IPC.x11Info)
   }
 }
 

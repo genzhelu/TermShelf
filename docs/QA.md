@@ -265,6 +265,32 @@ wsl -d Ubuntu -- pwd         # a working shell (replace Ubuntu with your distro)
 - [ ] **6.8** Verify the shell environment reports the pty (`tty` prints a `/dev/pts/...` path on a
       Linux target; `echo $TERM` is `xterm-256color`-like).
 
+## 6b. SSH remote GUI (X11 forwarding)
+
+Prerequisites: a remote Linux host that permits X11 forwarding (`X11Forwarding yes`,
+`xauth` installed) and a local GUI display:
+
+- Windows 11: WSL2 + WSLg, with `python3` or `socat` in the WSL distribution.
+- macOS: XQuartz installed.
+- Linux: the app has a working `DISPLAY`.
+
+Use the RELION host (or a remote with `xeyes`/`xdpyinfo`) for a real check.
+
+- [ ] **6b.1** Open **New SSH session**; the **Enable remote GUI (X11 forwarding)** checkbox
+      shows the detected local display (`WSLg`, `XQuartz`, or `Local X11`).
+- [ ] **6b.2** Enable the checkbox, save the profile, and connect. A toast confirms remote GUI
+      forwarding; the terminal and SFTP sidebar still work normally.
+- [ ] **6b.3** Run `/home/klin_soft/relion5beta/build/bin/relion` (or `xeyes`). The GUI window
+      opens locally and responds to mouse/keyboard input.
+- [ ] **6b.4** Open a second GUI window while the first remains open; both render.
+- [ ] **6b.5** Close the SSH tab/app: no WSL bridge process/port remains, and temporary xauth
+      entries are removed. Reconnect works and a new cookie/display is prepared.
+- [ ] **6b.6** Connect to a host with X11 forwarding disabled: the terminal connects normally,
+      shows a warning that X11 was rejected, and SFTP still works.
+- [ ] **6b.7** Disable the checkbox: no local GUI bridge/connection is started.
+- [ ] **6b.8** macOS: launch XQuartz if needed, connect, run `xeyes`; verify no xauth residue.
+- [ ] **6b.9** Linux: repeat with a local display; verify no XQuartz/WSL bridge is required.
+
 ## 7. Host key trust, mismatch and recovery
 
 - [ ] **7.1** With the connection still trusted, stop the server and delete the persisted host key:
