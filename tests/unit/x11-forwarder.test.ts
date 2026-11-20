@@ -46,6 +46,15 @@ async function startXServer(
   })
 }
 
+async function waitFor(condition: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (condition()) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error('Timed out waiting for condition')
+}
+
 function waitForMarker(stream: PassThrough, marker: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let seen = ''
@@ -139,7 +148,7 @@ describe('X11Forwarder', () => {
     const channel = new PassThrough()
     forwarder.attach(channel)
     channel.write(buildX11SetupPacket(wrongCookie))
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    await waitFor(() => warnings.length === 1)
     expect(setupSeen).toBe(false)
     expect(warnings).toHaveLength(1)
     forwarder.close()
@@ -172,7 +181,7 @@ describe('X11Forwarder', () => {
     })
     const channel = new PassThrough()
     expect(forwarder.attach(channel)).toBe(true)
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    await waitFor(() => warnings.length === 1)
     expect(warnings).toHaveLength(1)
     expect(forwarder.activeCount).toBe(0)
     forwarder.close()
