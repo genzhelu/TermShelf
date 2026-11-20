@@ -78,10 +78,10 @@ pnpm 11 are the only build prerequisites; the native PTY ships as a prebuilt N-A
 no compiler is needed.
 
 ```bash
-# On the Mac (source archive is in dist/termshelf-0.2.1-source.tar.gz,
+# On the Mac (source archive is in dist/termshelf-0.2.2-source.tar.gz,
 # or use the repo checkout)
-tar -xzf termshelf-0.2.1-source.tar.gz
-cd termshelf-0.2.1
+tar -xzf termshelf-0.2.2-source.tar.gz
+cd termshelf-0.2.2
 brew install node@22                      # or nvm install 22
 export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 npm install -g pnpm@11
@@ -97,8 +97,8 @@ pnpm build
 pnpm exec electron-builder --mac --arm64   # or --x64, or omit for both arches
 ```
 
-Outputs land in `dist/` as `TermShelf-0.2.1-mac-arm64.dmg` / `.zip` and
-`TermShelf-0.2.1-mac-x64.dmg` / `.zip`; the unpacked app is under `dist/mac-arm64/` or
+Outputs land in `dist/` as `TermShelf-0.2.2-mac-arm64.dmg` / `.zip` and
+`TermShelf-0.2.2-mac-x64.dmg` / `.zip`; the unpacked app is under `dist/mac-arm64/` or
 `dist/mac/`. Launch a locally built app with `open dist/mac-arm64/TermShelf.app`.
 
 Because builds are **unsigned**, an app downloaded from CI is quarantined by Gatekeeper:
@@ -106,7 +106,7 @@ right-click the app → **Open**, or run
 `xattr -dr com.apple.quarantine /Applications/TermShelf.app`. The first time you browse
 Desktop/Documents/Downloads, macOS may ask you to grant file access; allow it for the sidebar.
 Saved SSH secrets go to the macOS Keychain. Alternatively push the repository to GitHub and
-push a tag (`git tag v0.2.1 && git push origin v0.2.1`): the release workflow builds both Mac
+push a tag (`git tag v0.2.2 && git push origin v0.2.2`): the release workflow builds both Mac
 architectures and publishes a GitHub **Release** with the DMGs, ZIPs and checksums attached,
 so other macOS users can install without a GitHub account.
 
@@ -158,8 +158,8 @@ see [docs/BUILDING.md](docs/BUILDING.md) for signing, notarization and CI detail
 
 Artifacts produced and verified in this checkout:
 
-- `dist/TermShelf-0.2.1-linux-x86_64.AppImage` — built and smoke-tested headlessly.
-- `dist/TermShelf-0.2.1-win-x64.zip` — Windows x64 portable build (PE32+ verified; cannot be
+- `dist/TermShelf-0.2.2-linux-x86_64.AppImage` — built and smoke-tested headlessly.
+- `dist/TermShelf-0.2.2-win-x64.zip` — Windows x64 portable build (PE32+ verified; cannot be
   executed on this Linux host).
 - The macOS `.dmg`/`.zip` must be built on macOS (or the provided CI workflow); macOS
   packaging is not possible on Linux.

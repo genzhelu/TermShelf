@@ -109,6 +109,29 @@ describe('X11Forwarder', () => {
     expect(warnings).toEqual([])
   })
 
+  it('keeps an established relay alive after the connection deadline', async () => {
+    const expectedCookie = Buffer.alloc(16, 7)
+    const port = await startXServer((_packet, socket) => {
+      setTimeout(() => socket.write(Buffer.from('late-reply')), 150)
+    })
+    const warnings: string[] = []
+    const forwarder = new X11Forwarder({
+      target: { kind: 'tcp', host: '127.0.0.1', port },
+      expectedCookie,
+      localCookie: null,
+      timeoutMs: 50,
+      warn: (message) => warnings.push(message)
+    })
+    const channel = new PassThrough()
+    expect(forwarder.attach(channel)).toBe(true)
+    const response = waitForMarker(channel, 'late-reply')
+    channel.write(buildX11SetupPacket(expectedCookie))
+    await response
+    expect(warnings).toEqual([])
+    expect(forwarder.activeCount).toBe(1)
+    forwarder.close()
+  })
+
   it('forwards the original setup when the local server has no auth', async () => {
     const expectedCookie = Buffer.alloc(16, 6)
     let receivedCookie: Buffer | null = null

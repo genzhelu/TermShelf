@@ -14,6 +14,8 @@ export interface X11ForwarderOptions {
   /** Cookie accepted by the local server, substituted before relaying. */
   localCookie: Buffer | null
   warn?: (message: string) => void
+  /** Override the setup/connect deadline; primarily for tests. */
+  timeoutMs?: number
 }
 
 interface ParsedSetup {
@@ -84,6 +86,7 @@ export class X11Forwarder {
   private readonly expectedCookie: Buffer
   private readonly localCookie: Buffer | null
   private readonly warn: (message: string) => void
+  private readonly timeoutMs: number
   private closed = false
   private warned = false
 
@@ -92,6 +95,7 @@ export class X11Forwarder {
     this.expectedCookie = options.expectedCookie
     this.localCookie = options.localCookie
     this.warn = options.warn ?? (() => undefined)
+    this.timeoutMs = options.timeoutMs ?? CONNECT_TIMEOUT_MS
   }
 
   get activeCount(): number {
@@ -129,11 +133,12 @@ export class X11Forwarder {
     let finished = false
     let pending = Buffer.alloc(0)
     let setup: ParsedSetup | null = null
+    let timer: NodeJS.Timeout | null = null
 
     const finish = (): void => {
       if (finished) return
       finished = true
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       this.sockets.delete(socket)
       this.channels.delete(channel)
       try {
@@ -168,6 +173,12 @@ export class X11Forwarder {
       channel.pipe(socket)
       socket.pipe(channel)
       channel.resume()
+      // The connection is established and the X11 setup has been relayed.
+      // Do not let the connect deadline fire later and kill a live GUI.
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
     }
     const onChannelData = (chunk: Buffer): void => {
       if (finished || setupDone) return
@@ -194,9 +205,9 @@ export class X11Forwarder {
     channel.once('close', finish)
     channel.resume()
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       fail('Timed out connecting a remote GUI window to the local X11 server')
-    }, CONNECT_TIMEOUT_MS)
+    }, this.timeoutMs)
     timer.unref?.()
 
     socket.once('connect', () => {

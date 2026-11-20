@@ -1,7 +1,7 @@
 name: Release
 
 # Build distributable installers for all three desktop platforms.
-#   * Push a tag like v0.2.1 to build the artifacts and publish a GitHub Release
+#   * Push a tag like v0.2.2 to build the artifacts and publish a GitHub Release
 #     (macOS users can then download the .dmg directly from the Releases page).
 #   * Or run the workflow manually; artifacts stay on the workflow run.
 # Artifacts are unsigned by default. To sign later, see "Code signing" in
@@ -213,11 +213,15 @@ jobs:
           WSLg automatically, macOS uses XQuartz. Enable it for RELION or other remote GUI apps.
           X11 forwarding is only appropriate for trusted hosts.
 
-          Version 0.2.1 hardens remote GUI forwarding: the WSLg bridge now requires a per-process
+          Version 0.2.1 hardened remote GUI forwarding: the WSLg bridge now requires a per-process
           token and stops when the last GUI session closes, and local X11 credentials are
           substituted by the relay instead of modifying the user's xauth database. Pending
           session startup is cancelled cleanly, XQuartz launchd endpoints and WSLg displays are
           matched correctly, and X11 rejection keeps integrated shell folder sync.
+
+          Version 0.2.2 fixes the X11 relay's setup watchdog: it was not cleared after a
+          successful X11 connection, so a live RELION/GUI window could be disconnected after
+          five seconds with an "X I/O error".
 
           ### Linux (x64, development)
           `TermShelf-<version>-linux-x86_64.AppImage`, made executable and run.
