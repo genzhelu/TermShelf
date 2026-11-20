@@ -138,24 +138,27 @@ describe('probeX11Target', () => {
   it('sends the bridge preface before the X11 setup', async () => {
     const preface = Buffer.from('bridge-secret')
     let received = Buffer.alloc(0)
-    const port = await startXServer(() => undefined)
-    // Replace the default handler behavior with a preface-aware server.
-    const server = servers.pop()!
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-    const prefaceServer = net.createServer((socket) => {
+    const server = net.createServer((socket) => {
       socket.on('data', (chunk) => {
         received = Buffer.concat([received, chunk])
-        if (received.length >= 24) socket.end(Buffer.from([1, 0, 11, 0]))
+        if (received.length >= preface.length + 12) {
+          socket.end(Buffer.from([1, 0, 11, 0]))
+        }
+      })
+      socket.on('error', () => undefined)
+    })
+    servers.push(server)
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address()
+        resolve(typeof address === 'object' && address ? address.port : 0)
       })
     })
-    servers.push(prefaceServer)
-    await new Promise<void>((resolve) => prefaceServer.listen(port, '127.0.0.1', () => resolve()))
     expect(
       await probeX11Target({ kind: 'tcp', host: '127.0.0.1', port, preface }, Buffer.alloc(16))
     ).toBe(true)
     expect(received.subarray(0, preface.length).equals(preface)).toBe(true)
   })
-
   it('rejects an authentication failure or closed connection', async () => {
     const port = await startXServer((socket) => {
       socket.once('data', () => socket.end(Buffer.from([0])))
@@ -211,9 +214,6 @@ describe('X11Service detection', () => {
 
 describe('X11Service prepareSession', () => {
   it('substitutes the local xauth cookie instead of modifying the authority file', async () => {
-    const display = ':9999'
-    const tcpPort = 6000 + 9999
-    process.env.DISPLAY = display
     const commands: string[][] = []
     let connections = 0
     const server = net.createServer((socket) => {
@@ -223,7 +223,14 @@ describe('X11Service prepareSession', () => {
       })
     })
     servers.push(server)
-    await new Promise<void>((resolve) => server.listen(tcpPort, '127.0.0.1', () => resolve()))
+    const tcpPort = await new Promise<number>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address()
+        resolve(typeof address === 'object' && address ? address.port : 0)
+      })
+    })
+    const display = `:${tcpPort - 6000}`
+    process.env.DISPLAY = display
 
     const service = new X11Service({
       platform: 'linux',
@@ -234,7 +241,7 @@ describe('X11Service prepareSession', () => {
         if (args[0] === 'list') {
           return {
             code: 0,
-            stdout: 'host/unix:9999 MIT-MAGIC-COOKIE-1 00112233445566778899aabbccddeeff\n',
+            stdout: `host/unix:${tcpPort - 6000} MIT-MAGIC-COOKIE-1 00112233445566778899aabbccddeeff\n`,
             stderr: ''
           }
         }
